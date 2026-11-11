@@ -29,6 +29,7 @@ from .data.acquisition import http_fetcher
 from .data.sources.bourse_trader import BourseTraderSource
 from .db import Destination, PackageRow, PublishJob, Run, create_schema, make_engine, make_sessionmaker
 from .llm import AnthropicProvider, Gateway, OpenAICompatibleProvider, Route
+from .publishing.instagram import DirectoryHost, InstagramAdapter, NoHost
 from .publishing.adapters import BotApiAdapter, MissingTokenAdapter
 from .publishing.publisher import Publisher
 from .runtime import Runtime, set_runtime
@@ -48,10 +49,14 @@ def _runtime(cfg: Settings) -> Runtime:
         provider = AnthropicProvider(cfg.llm_api_key, **({"base_url": cfg.llm_base_url} if cfg.llm_base_url else {}))
     else:
         provider = OpenAICompatibleProvider(cfg.llm_api_key, cfg.llm_base_url)
-    routes = [Route(provider, cfg.llm_model)] + ([Route(provider, cfg.llm_fallback_model)] if cfg.llm_fallback_model else [])
+    def tier(model: str) -> list[Route]:
+        main = model or cfg.llm_model
+        return [Route(provider, main)] + ([Route(provider, cfg.llm_fallback_model)] if cfg.llm_fallback_model and cfg.llm_fallback_model != main else [])
+    routes = tier(cfg.llm_model)
     sessions = _sessions(cfg)
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
-                   gateway=Gateway(sessions, {"writer": routes}, max_calls_per_run=cfg.llm_max_calls_per_run),
+                   gateway=Gateway(sessions, {"writer": routes, "manager": tier(cfg.manager_model), "reviewer": tier(cfg.reviewer_model)},
+                                   max_calls_per_run=cfg.llm_max_calls_per_run),
                    fetcher=http_fetcher(), sources={"bourse_trader": BourseTraderSource()}, brand_root=cfg.orgs_dir)
 
 
@@ -163,6 +168,9 @@ def _publisher(cfg: Settings) -> Publisher:
         token = os.environ.get(dest.secret_env, "")
         if not token:
             return MissingTokenAdapter(dest.secret_env)
+        if dest.platform == "instagram":
+            host = DirectoryHost(cfg.public_asset_dir, cfg.public_asset_url) if cfg.public_asset_dir and cfg.public_asset_url else NoHost()
+            return InstagramAdapter(ig_user_id=dest.chat_id, token=token, host=host, timeout=cfg.send_timeout_seconds)
         return BotApiAdapter(platform=dest.platform, token=token, chat_id=dest.chat_id, timeout=cfg.send_timeout_seconds)
     return Publisher(_sessions(cfg), AssetStore(cfg.asset_dir), adapter_factory=adapter,
                      max_attempts=cfg.max_publish_attempts, retry_delays=cfg.retry_delays_seconds)

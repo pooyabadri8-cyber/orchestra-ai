@@ -1,4 +1,4 @@
-"""Designer: branded carousel slides from verified content, rendered to PNG by a headless browser.
+"""Designer: branded carousel slides from verified content, rendered to JPEG by a headless browser.
 
 - The layout is a versioned HTML/CSS template; the brand kit gives colours, the bundled Vazirmatn font is embedded,
   so the same input renders the same way on any machine.
@@ -24,6 +24,8 @@ TEMPLATE_VERSION = "carousel@1"
 WIDTH, HEIGHT = 1080, 1350
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 SCALES = (1.0, 0.92, 0.84, 0.76)
+JPEG_QUALITY = 92
+MIME = "image/jpeg"
 
 
 class RenderError(Exception):
@@ -33,7 +35,7 @@ class RenderError(Exception):
 @dataclass(frozen=True)
 class SlideImage:
     order: int
-    png: bytes
+    data: bytes
     width: int
     height: int
     sha256: str
@@ -139,6 +141,27 @@ def png_size(png: bytes) -> tuple[int, int]:
     return struct.unpack(">II", png[16:24])
 
 
+def jpeg_size(data: bytes) -> tuple[int, int]:
+    """Width and height from the JPEG frame header (SOF0..SOF15, except DHT/JPG/DAC markers)."""
+    if data[:2] != b"\xff\xd8":
+        raise RenderError("output is not a JPEG")
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7 or marker == 0xFF:
+            i += 1 if marker == 0xFF else 2
+            continue
+        length = struct.unpack(">H", data[i + 2:i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h, w = struct.unpack(">HH", data[i + 5:i + 9])
+            return w, h
+        i += 2 + length
+    raise RenderError("JPEG has no frame header")
+
+
 async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> list[SlideImage]:
     """Render the verified slides plus the brand's closing slide. `browser`: an open Playwright browser (optional)."""
     if not slides:
@@ -165,15 +188,15 @@ async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> l
                     break
             else:
                 raise RenderError(f"اسلاید {n}: متن در کادر جا نشد ({', '.join(qc['overflow'])}); متن باید کوتاه‌تر شود")
-            png = await page.screenshot(type="png", full_page=False)
-            w, h = png_size(png)
+            png = await page.screenshot(type="jpeg", quality=JPEG_QUALITY, full_page=False)  # Instagram takes JPEG only
+            w, h = jpeg_size(png)
             if (w, h) != (WIDTH, HEIGHT):
                 raise RenderError(f"اسلاید {n}: اندازهٔ {w}×{h} به‌جای {WIDTH}×{HEIGHT}")
             texts = [] if slide is None else [slide.title, *slide.bullets, *(v for _, v in slide.stats)]
             shown = [c.claim_id for c in claims if any(c.rendered in t for t in texts)]
             manifest = {"template": TEMPLATE_VERSION, "scale": scale, "claims": shown,
                         "chart_sources": list(slide.chart.sources) if slide is not None and slide.chart else []}
-            out.append(SlideImage(order=n, png=png, width=w, height=h, sha256=hashlib.sha256(png).hexdigest(),
+            out.append(SlideImage(order=n, data=png, width=w, height=h, sha256=hashlib.sha256(png).hexdigest(),
                                   kind="end" if slide is None else slide.kind,
                                   chart_id=slide.chart.id if slide is not None and slide.chart else None, manifest=manifest))
         await page.close()

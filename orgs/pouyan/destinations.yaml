@@ -9,3 +9,7 @@ destinations:
     platform: bale
     chat_id: "@your_test_channel_bale"
     secret_env: BALE_TEST_BOT_TOKEN
+  - id: ig_test
+    platform: instagram
+    chat_id: "17841400000000000"      # Instagram business account id (from Meta Business / Graph API Explorer)
+    secret_env: INSTAGRAM_TEST_TOKEN  # long-lived access token with instagram_content_publish permission

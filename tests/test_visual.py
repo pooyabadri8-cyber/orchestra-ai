@@ -7,7 +7,7 @@ import pytest
 
 from orchestra.agents.multichannel import RenderedSlide
 from orchestra.visual.charts import Bar, ChartSpec
-from orchestra.visual.render import HEIGHT, WIDTH, RenderError, png_size, render_carousel
+from orchestra.visual.render import HEIGHT, WIDTH, RenderError, jpeg_size, render_carousel
 from orchestra.visual.svg import render_svg
 
 from test_content import BRAND
@@ -37,7 +37,7 @@ def test_carousel_renders_at_instagram_size_with_closing_slide():
     imgs = asyncio.run(render_carousel(BRAND, slides))
     assert [i.kind for i in imgs] == ["cover", "content", "content", "end"]
     for im in imgs:
-        assert png_size(im.png) == (WIDTH, HEIGHT) and im.sha256 == hashlib.sha256(im.png).hexdigest()
+        assert jpeg_size(im.data) == (WIDTH, HEIGHT) and im.sha256 == hashlib.sha256(im.data).hexdigest()
     assert imgs[1].manifest["chart_sources"] == ["a", "b"] and imgs[1].chart_id == "groups_flow"
 
 

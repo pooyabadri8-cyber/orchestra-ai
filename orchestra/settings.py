@@ -20,12 +20,19 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_model: str = ""
     llm_fallback_model: str = ""  # optional second model on the same provider
-    llm_max_calls_per_run: int = 12
+    llm_max_calls_per_run: int = 20  # manager + writer (with retries) + two reviewers
 
     # publishing
     max_publish_attempts: int = 4
     retry_delays_seconds: list[int] = [30, 120, 600]
     send_timeout_seconds: float = 45.0
+    # Instagram fetches images from a public URL: a folder your web server publishes, and that folder's address
+    public_asset_dir: Path | None = None
+    public_asset_url: str = ""
+
+    # model tiers: empty means "use llm_model"
+    manager_model: str = ""
+    reviewer_model: str = ""
 
 
 def load_settings() -> Settings:

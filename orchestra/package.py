@@ -15,8 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-Platform = Literal["telegram", "bale"]
-DeliveryMode = Literal["album", "photo", "text"]
+Platform = Literal["telegram", "bale", "instagram"]
+DeliveryMode = Literal["album", "photo", "text", "carousel"]
 
 
 class Frozen(BaseModel):
@@ -52,8 +52,10 @@ class DeliveryStep(Frozen):
             raise ValueError("a text step carries no assets")
         if self.mode == "photo" and len(self.asset_ids) != 1:
             raise ValueError("a photo step carries exactly one asset")
-        if self.mode == "album" and not (2 <= len(self.asset_ids) <= 10):
-            raise ValueError("an album carries 2 to 10 assets")
+        if self.mode in ("album", "carousel") and not (2 <= len(self.asset_ids) <= 10):
+            raise ValueError(f"a {self.mode} carries 2 to 10 assets")
+        if self.mode == "carousel" and self.parse_mode != "none":
+            raise ValueError("a carousel caption is plain text (parse_mode none)")
         if not self.body.strip():
             raise ValueError("empty body")
         return self
@@ -73,6 +75,11 @@ class DestinationPlan(Frozen):
                 raise ValueError("publication window times must be timezone-aware")
         if self.not_before and self.expires_at and self.expires_at <= self.not_before:
             raise ValueError("expires_at must be after not_before")
+        for step in self.delivery_plan:
+            if self.platform == "instagram" and step.mode not in ("carousel", "photo"):
+                raise ValueError("Instagram takes only carousel or photo steps")
+            if self.platform != "instagram" and step.mode == "carousel":
+                raise ValueError("carousel is an Instagram mode; use album for Telegram and Bale")
         return self
 
 
