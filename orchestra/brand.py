@@ -27,14 +27,14 @@ class PostTemplate(BaseModel):
 class BrandColors(BaseModel):
     """Slide and chart palette. Placeholder defaults until the brand's real colours are set in brand.yaml."""
     model_config = ConfigDict(frozen=True, extra="forbid")
-    background: str = "#0E1A2B"
-    surface: str = "#16263D"
-    primary: str = "#2F80ED"
-    accent: str = "#F2C94C"
-    text: str = "#F4F6FA"
-    muted: str = "#9AA8BC"
-    positive: str = "#27AE60"
-    negative: str = "#EB5757"
+    background: str = "#FFFFFF"
+    surface: str = "#EEF3F8"
+    primary: str = "#1F4E9C"
+    accent: str = "#5DC094"
+    text: str = "#1B2C5A"
+    muted: str = "#5A6788"
+    positive: str = "#2E9E6B"
+    negative: str = "#D64545"
 
 
 class Brand(BaseModel):
@@ -51,6 +51,10 @@ class Brand(BaseModel):
     exclude_ignore: tuple[str, ...] = ()
     template: PostTemplate
     single_stock_content: bool = False  # may the org publish about one named stock (single-stock technical/fundamental)?
+    logo_file: str | None = None  # full logo (mark + name), path relative to the org folder
+    logo_mark_file: str | None = None  # mark only, for small headers
+    logo_path: Path | None = Field(default=None, description="filled by the loader")
+    logo_mark_path: Path | None = Field(default=None, description="filled by the loader")
     colors: "BrandColors" = Field(default_factory=lambda: BrandColors())
     version_tag: str = Field(default="", description="filled by the loader: sha of the file")
 
@@ -81,6 +85,12 @@ def load_brand(org_id: str, root: str | Path = "orgs") -> Brand:
     raw = path.read_bytes()
     data = yaml.safe_load(raw.decode("utf-8")) or {}
     data["version_tag"] = f"brand@{data.get('template', {}).get('version', 0)}#{hashlib.sha256(raw).hexdigest()[:12]}"
+    for key, dest in (("logo_file", "logo_path"), ("logo_mark_file", "logo_mark_path")):
+        if data.get(key):
+            f = path.parent / data[key]
+            if not f.is_file():
+                raise ValueError(f"{path}: {key} points to a missing file: {f}")
+            data[dest] = f
     brand = Brand.model_validate(data)
     if brand.org_id != org_id:
         raise ValueError(f"{path}: org_id is {brand.org_id}, expected {org_id}")

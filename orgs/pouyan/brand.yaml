@@ -56,8 +56,20 @@ exclude_ignore:
 - Sovereign Wealth Fund
 - wealth fund
 - pension fund
+logo_file: logo.png
+logo_mark_file: logo_mark.png
+# Palette taken from the Pouyan logo: navy wordmark, blue-to-green mark.
+colors:
+  background: '#FFFFFF'
+  surface: '#EEF3F8'
+  primary: '#1F4E9C'
+  accent: '#5DC094'
+  text: '#1B2C5A'
+  muted: '#5A6788'
+  positive: '#2E9E6B'
+  negative: '#D64545'
 template:
-  version: 1
+  version: 2
   brand_hashtag: '#کارگزاری_پویان'
   default_topic_hashtag: '#بازار_سرمایه'
   default_cta: برای دیدن تحلیل‌ها و خبرهای بیشتر، کانال را دنبال کنید.

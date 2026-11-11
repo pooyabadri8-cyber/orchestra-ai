@@ -20,7 +20,7 @@ from ..brand import Brand
 from ..content.numbers import FA
 from .svg import render_svg
 
-TEMPLATE_VERSION = "carousel@1"
+TEMPLATE_VERSION = "carousel@2"
 WIDTH, HEIGHT = 1080, 1350
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 SCALES = (1.0, 0.92, 0.84, 0.76)
@@ -61,26 +61,43 @@ body{{font-family:Vazirmatn,sans-serif;color:{c.text};direction:rtl;--s:1}}
 .slide{{position:relative;width:{WIDTH}px;height:{HEIGHT}px;padding:84px 80px 150px;display:flex;flex-direction:column;gap:calc(34px*var(--s));
   background:radial-gradient(1200px 700px at 100% 0%, {c.surface} 0%, {c.background} 70%)}}
 .bar{{position:absolute;top:0;right:0;left:0;height:14px;background:linear-gradient(90deg,{c.accent},{c.primary})}}
-.brand{{font-weight:800;font-size:30px;color:{c.accent};letter-spacing:0}}
+.head{{display:flex;align-items:center;gap:18px}}
+.mark{{height:78px;width:auto;mix-blend-mode:multiply}}
+.biglogo{{width:760px;height:auto;mix-blend-mode:multiply;align-self:center}}
+.brand{{font-weight:800;font-size:34px;color:{c.text};letter-spacing:0}}
 h1{{font-weight:800;font-size:calc(66px*var(--s));line-height:1.35}}
-.cover h1{{font-size:calc(84px*var(--s));line-height:1.3;margin-top:auto}}
+.cover h1{{font-size:calc(80px*var(--s));line-height:1.3}}
+.cover .biglogo{{margin-top:10px}}
 .sub{{font-size:calc(38px*var(--s));line-height:1.6;color:{c.muted}}}
-.cover .sub{{margin-bottom:auto}}
+
 .stats{{display:grid;grid-template-columns:1fr 1fr;gap:22px}}
-.stat{{background:{c.surface};border-radius:24px;padding:calc(26px*var(--s)) 30px;border-right:8px solid {c.primary}}}
+.stat{{background:{c.surface};border-radius:24px;padding:calc(26px*var(--s)) 30px;border-right:8px solid {c.accent}}}
 .stat .v{{font-weight:800;font-size:calc(46px*var(--s));line-height:1.3;color:{c.text}}}
 .stat .l{{font-size:calc(27px*var(--s));color:{c.muted};margin-top:6px}}
 ul{{list-style:none;display:flex;flex-direction:column;gap:calc(20px*var(--s))}}
 li{{font-size:calc(36px*var(--s));line-height:1.65;padding-right:34px;position:relative}}
 li::before{{content:"";position:absolute;right:0;top:.72em;width:14px;height:14px;border-radius:50%;background:{c.accent}}}
-.chart{{background:{c.surface};border-radius:28px;padding:26px 20px 14px}}
+.chart{{background:{c.surface};border:2px solid #DCE5EF;border-radius:28px;padding:26px 20px 14px}}
 .chart .ct{{font-weight:700;font-size:28px;color:{c.muted};margin:0 10px 12px}}
 .chart svg{{width:100%;height:auto;display:block}}
 .foot{{position:absolute;bottom:58px;right:80px;left:80px;display:flex;justify-content:space-between;font-size:26px;color:{c.muted}}}
 .end{{justify-content:center;align-items:flex-start}}
 .end h1{{font-size:calc(64px*var(--s))}}
+.end .biglogo{{align-self:flex-start;width:640px}}
 .end .links{{display:flex;flex-direction:column;gap:18px;font-size:34px}}
 """
+
+
+def _logo(path, cls: str) -> str:
+    if path is None:
+        return ""
+    data = base64.b64encode(Path(path).read_bytes()).decode()
+    return f'<img class="{cls}" alt="" src="data:image/png;base64,{data}">'
+
+
+def _head(brand: Brand) -> str:
+    mark = _logo(brand.logo_mark_path, "mark")
+    return f'<div class="head">{mark}<div class="brand">{_e(brand.name)}</div></div>'
 
 
 def _e(s: str) -> str:
@@ -97,12 +114,12 @@ def slide_html(brand: Brand, slide, n: int, total: int) -> str:
     if slide is None:
         t = brand.template
         links = "".join(f"<div>{_e(link.text)}</div>" for link in t.footer_links)
-        body = (f'<div class="slide end"><div class="bar"></div><div class="brand">{_e(brand.name)}</div>'
+        body = (f'<div class="slide end"><div class="bar"></div>{_logo(brand.logo_path, "biglogo") or _head(brand)}'
                 f'<h1 class="fit">{_e(t.default_cta)}</h1><div class="sub fit">{_e(t.footer_text)}</div>'
                 f'<div class="links">{links}</div>{foot}</div>')
     elif slide.kind == "cover":
         sub = "".join(f'<div class="sub">{_e(b)}</div>' for b in slide.bullets)
-        body = (f'<div class="slide cover"><div class="bar"></div><div class="brand">{_e(brand.name)}</div>'
+        body = (f'<div class="slide cover"><div class="bar"></div>{_logo(brand.logo_path, "biglogo") or _head(brand)}'
                 f'<h1>{_e(slide.title)}</h1>{sub}{foot}</div>')
     else:
         stats = ""
@@ -113,7 +130,7 @@ def slide_html(brand: Brand, slide, n: int, total: int) -> str:
         if slide.chart is not None:
             chart = f'<div class="chart"><div class="ct">{_e(slide.chart.title)}</div>{render_svg(slide.chart, brand.colors)}</div>'
         bullets = f'<ul>{"".join(f"<li>{_e(b)}</li>" for b in slide.bullets)}</ul>' if slide.bullets else ""
-        body = (f'<div class="slide"><div class="bar"></div><div class="brand">{_e(brand.name)}</div>'
+        body = (f'<div class="slide"><div class="bar"></div>{_head(brand)}'
                 f'<h1>{_e(slide.title)}</h1>{stats}{chart}{bullets}{foot}</div>')
     return f'<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><style>{_css(brand)}</style></head><body>{body}</body></html>'
 

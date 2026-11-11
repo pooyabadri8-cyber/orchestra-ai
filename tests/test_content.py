@@ -185,4 +185,4 @@ def test_package_carries_both_texts_sources_and_versions(sessions, assets, clock
     bale = pkg.content.destination("bale_test").delivery_plan[0]
     assert tg.parse_mode == "HTML" and bale.parse_mode == "Markdown" and tg.body != bale.body
     assert {d.id for d in pkg.content.sources.data_points} == {c.point_id for c in v.claims}  # only what was used
-    assert pkg.content.versions["brand"].startswith("brand@1#") and pkg.verify()
+    assert pkg.content.versions["brand"].startswith("brand@2#") and pkg.verify()
