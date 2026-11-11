@@ -10,7 +10,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ORCHESTRA_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://orchestra:orchestra@localhost:5432/orchestra"
+    system_database_url: str = "postgresql://orchestra:orchestra@localhost:5432/orchestra_dbos"  # DBOS workflow state
     asset_dir: Path = Path("assets_store")
+    orgs_dir: Path = Path("orgs")
+
+    # language model (writer tier)
+    llm_provider: str = "anthropic"  # anthropic | openai_compatible
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
+    llm_fallback_model: str = ""  # optional second model on the same provider
+    llm_max_calls_per_run: int = 12
 
     # publishing
     max_publish_attempts: int = 4

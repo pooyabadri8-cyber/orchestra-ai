@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    Float,
     DateTime,
     ForeignKey,
     Index,
@@ -153,6 +154,80 @@ class AuditEvent(Base):
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     prev_hash: Mapped[str] = mapped_column(String(64))
     hash: Mapped[str] = mapped_column(String(64))
+
+
+class DataSnapshot(Base):
+    """One fetch of one source. The raw response is kept in the asset store under `raw_sha256`, so every number can be
+    traced back to the exact bytes it was parsed from."""
+
+    __tablename__ = "data_snapshots"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    url: Mapped[str] = mapped_column(Text)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    as_of: Mapped[datetime] = mapped_column(UTCDateTime)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    parser: Mapped[str] = mapped_column(String(64))  # e.g. "bourse_trader@1"
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class DataPointRow(Base):
+    """One value from a snapshot (or derived in code from other points: `derivation`)."""
+
+    __tablename__ = "data_points"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    snapshot_id: Mapped[str | None] = mapped_column(ForeignKey("data_snapshots.id"), nullable=True, index=True)
+    source_id: Mapped[str] = mapped_column(String(64))
+    metric: Mapped[str] = mapped_column(String(96), index=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)  # a stock or an industry group
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    value: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(16))  # IRT (toman) | point | percent
+    decimals: Mapped[int] = mapped_column(Integer)  # precision the source gave, in the source's own scale
+    scale: Mapped[str] = mapped_column(String(4), default="")  # source scale: T, B, M, K or ""
+    source_text: Mapped[str] = mapped_column(String(64))  # the exact string on the page, e.g. "18.6T"
+    as_of: Mapped[datetime] = mapped_column(UTCDateTime)
+    derivation: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"formula": id, "inputs": [ids]}
+
+
+class LLMCall(Base):
+    """Every model call: what was asked, what came back, what it cost. Kept for audit and for cost control."""
+
+    __tablename__ = "llm_calls"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    step_key: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(96))
+    prompt_sha256: Mapped[str] = mapped_column(String(64))
+    system: Mapped[str] = mapped_column(Text)
+    prompt: Mapped[str] = mapped_column(Text)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)  # None = price not configured
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class Run(Base):
+    """One workflow run as the business sees it. The id is the DBOS workflow id, which makes starting the same run
+    twice impossible. Every step writes its progress here, so lineage reads from one table."""
+
+    __tablename__ = "runs"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    template: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))  # running | awaiting_approval | approved | rejected | blocked | expired | skipped | failed
+    snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    package_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
 def make_engine(url: str) -> Engine:

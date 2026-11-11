@@ -79,6 +79,8 @@ class DestinationPlan(Frozen):
 class DataPointRef(Frozen):
     id: str
     metric: str
+    subject: str | None = None
+    source_text: str = ""
     value: float
     unit: str
     as_of: datetime

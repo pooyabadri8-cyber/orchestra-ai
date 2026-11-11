@@ -1,0 +1,11 @@
+# Channels ORCHESTRA may publish to for this organization. Tokens are NOT here: secret_env names the .env variable.
+# Start with private test channels only. The bot must be an admin of the channel with permission to post.
+destinations:
+  - id: tg_test
+    platform: telegram
+    chat_id: "@your_test_channel"      # or the numeric id, e.g. -1001234567890
+    secret_env: TELEGRAM_TEST_BOT_TOKEN
+  - id: bale_test
+    platform: bale
+    chat_id: "@your_test_channel_bale"
+    secret_env: BALE_TEST_BOT_TOKEN

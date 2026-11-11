@@ -62,6 +62,16 @@ class DestinationAdapter(Protocol):
     async def send(self, step: DeliveryStep, media: list[Media]) -> Outcome: ...
 
 
+@dataclass
+class MissingTokenAdapter:
+    """Used when a destination's token is not configured: nothing is sent and the job fails clearly."""
+
+    secret_env: str
+
+    async def send(self, step: DeliveryStep, media: list[Media]) -> Outcome:
+        return Permanent(f"توکن ربات تنظیم نشده است ({self.secret_env} در .env)")
+
+
 def _ext(mime: str) -> str:
     return {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "bin")
 
