@@ -1,0 +1,42 @@
+# جدول محتوای روزانهٔ کانال. مستقل از config.yaml است؛ بعد از تغییر، ربات را ری‌استارت کنید.
+# همهٔ ساعت‌ها به وقت timezone در config.yaml (تهران) است.
+#
+# kind:
+#   news    خبرهای موثر بر بازار (یک پست خلاصه از چند منبع خبری، طبق news_sources.yaml)
+#   open    تحلیل آغاز بازار
+#   report  گزارش روزانهٔ بازار (همان دستور /gozaresh، این‌بار داخل کانال)
+#   industry تحلیل صنعت (گروه) روز، بر پایهٔ بیشترین ورود پول حقیقی؛ هیچ سهم تکی نمی‌آید
+#   symbol  تحلیل سهم روز (دیگر استفاده نمی‌شود؛ پست دربارهٔ تک‌تک سهم‌ها متوقف شده)
+#   capital معرفی سهم‌هایی که افزایش سرمایه داده‌اند (از capital_sources.yaml؛ اگر خبری نباشد پستی ساخته نمی‌شود)
+#   gold    تحلیل طلا
+#   close   تحلیل بازار بعد از بازار
+#
+# days: اختیاری. مثلاً [sat, sun, mon, tue, wed] یا all. پیش‌فرض: news هر روز، بقیه فقط روزهای market_days.
+# lead: اختیاری. چند دقیقه قبل از ساعت پست، نوشتن شروع شود (پیش‌فرض lead_minutes).
+
+enabled: true
+
+market_days: [sat, sun, mon, tue, wed]   # روزهای کاری بازار (پنجشنبه و جمعه تعطیل)
+lead_minutes: 4                          # تحلیل‌ها این‌قدر زودتر نوشته می‌شوند (و سر ساعت منتشر می‌شوند)؛ پست آماده در صف نمی‌ماند
+late_minutes: 20                         # اگر تا این‌قدر بعد از ساعت پست نتوانست بسازد (مثلاً ربات خاموش بود)، پست آن روز رد می‌شود
+news_window_hours: 16                    # خبرهای چند ساعت اخیر برای پست خبری (اولین پست روز: فقط تازه‌ترین‌ها)
+context_window_hours: 30                 # مطالب چند ساعت اخیر برای تحلیل‌ها
+gold_window_hours: 48                    # مطالب چند ساعت اخیر برای تحلیل طلا
+news_sources_file: "news_sources.yaml"
+capital_sources_file: "capital_sources.yaml"
+capital_window_hours: 30                 # خبرهای چند ساعت اخیر برای پست افزایش سرمایه
+state_file: "data/daily.json"
+report_stocks: true                      # false = در پست گزارش بازار فهرست تک‌تک سهم‌ها نیاید (فقط شاخص و گروه‌ها)
+
+schedule:
+  - {id: news,        kind: news,   time: "08:30"}     # اولین پست روز: مهم‌ترین اخبار جنگ، دلار، انرژی و ...
+  - {id: report-0900, kind: report, time: "09:00"}
+  - {id: open,        kind: open,   time: "09:20"}     # تحلیل ساعت ۹ تا ۹:۳۰
+  - {id: report-1030, kind: report, time: "10:30"}
+  - {id: industry,    kind: industry, time: "11:15"}   # تحلیل صنعت روز (جای «نماد روز»)
+  - {id: report-1200, kind: report, time: "12:00"}
+  - {id: report-1330, kind: report, time: "13:30"}
+  - {id: gold,        kind: gold,   time: "14:15"}
+  - {id: report-1500, kind: report, time: "15:00"}
+  - {id: close,       kind: close,  time: "16:30"}     # بعد از ساعت ۴
+  - {id: capital,     kind: capital, time: "17:00", days: all}   # هر روز؛ اگر خبر افزایش سرمایه نباشد پستی نمی‌آید

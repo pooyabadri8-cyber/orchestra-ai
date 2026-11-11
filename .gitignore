@@ -1,0 +1,9 @@
+# secrets and runtime state never go to git or into a zip handed to anyone
+customers/*/secrets.env
+customers/*/.env
+customers/*/data/
+customers/*/logs/
+backups/
+.venv/
+__pycache__/
+*.pyc

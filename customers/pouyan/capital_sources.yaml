@@ -1,0 +1,20 @@
+# منابع پست روزانهٔ «سهم‌های دارای افزایش سرمایه» (ساعت ۱۷ در daily.yaml).
+# قالب مثل sources.yaml است. از مطلب‌های این منابع فقط آن‌هایی که عبارت «افزایش سرمایه» دارند به مدل داده می‌شود.
+# این منابع جدا از sources.yaml هستند: کانال «کدال ۷۲۴» در sources.yaml غیرفعال است ولی اینجا فقط برای همین پست خوانده می‌شود.
+# وضعیت این منابع را هم دستور /dailycheck نشان می‌دهد.
+
+sources:
+  - name: "کدال ۷۲۴"
+    type: telegram
+    channel: "C0dal724"
+    min_chars: 40              # پست‌های این کانال کوتاه‌اند
+
+  - name: "بتا سهم"
+    type: telegram
+    channel: "betasahm1"
+    min_chars: 40
+
+  - name: "سنا"
+    type: links
+    url: "https://sena.ir"
+    max_links: 20

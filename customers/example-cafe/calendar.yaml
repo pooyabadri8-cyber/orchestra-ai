@@ -1,0 +1,28 @@
+# برنامهٔ هفتگی پست‌های این مشتری (به وقت timezone در config.yaml). بعد از تغییر، ربات را ری‌استارت کنید.
+# kind: topic  = پست دربارهٔ یک موضوع، فقط از پایگاه دانش (knowledge/)
+#       digest = خلاصهٔ مطلب‌های تازهٔ منابع (sources.yaml)؛ اگر خبری نباشد پستی ساخته نمی‌شود
+enabled: true
+lead_minutes: 2
+late_minutes: 30
+state_file: data/calendar.json
+
+schedule:
+  - id: tip
+    kind: topic
+    days: [sat, mon, wed]
+    time: "11:00"
+    pillar: "نکتهٔ قهوه"
+    task: "یک نکتهٔ کوتاه و کاربردی دربارهٔ {angle}"
+    angles: ["انتخاب دانه", "آسیاب کردن", "دم‌آوری در خانه", "نگهداری قهوه"]
+  - id: event
+    kind: topic
+    days: [wed]
+    time: "17:00"
+    pillar: "منو و رویداد"
+    task: "یادآوری «شب دم‌آوری» همین پنجشنبه"
+  - id: weekly
+    kind: digest
+    days: [fri]
+    time: "17:00"
+    window_hours: 120
+    task: "خلاصهٔ مهم‌ترین خبرهای این هفتهٔ دنیای قهوه"

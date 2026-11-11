@@ -1,0 +1,7 @@
+# منابع خبر این مشتری. فعلاً خالی است؛ هر منبع را طبق راهنمای docs/features-fa.md اضافه کنید، مثلاً:
+#
+# sources:
+#   - name: "نمونهٔ فید"
+#     type: rss
+#     url: "https://example.com/feed.xml"
+sources: []

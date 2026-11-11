@@ -1,0 +1,10 @@
+# قالب ثابت پست‌های کانال. بعد از تغییر، ربات را ری‌استارت کنید.
+brand_hashtag: "#کافه_نمونه"
+default_topic_hashtag: "#قهوه"
+headline_bold: true
+default_cta: "برای نکته‌های بیشتر دربارهٔ قهوه، کانال را دنبال کنید."
+cta_url: ""
+footer_text: "کافه نمونه — خیابان نمونه، شمارهٔ ۱۲"
+footer_links:
+  - text: "📱 اینستاگرام"
+    url: "https://www.instagram.com/example_cafe"

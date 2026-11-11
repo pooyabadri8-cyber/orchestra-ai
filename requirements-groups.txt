@@ -1,0 +1,3 @@
+# فقط اگر می‌خواهید ربات از گروه‌های تلگرام (با حساب خودتان) مطلب بخواند:
+#   pip install -r requirements-groups.txt
+telethon>=1.36

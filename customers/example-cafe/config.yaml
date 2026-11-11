@@ -1,0 +1,37 @@
+# تنظیمات غیرمحرمانهٔ این مشتری. توکن‌ها و کلیدها در secrets.env هستند (فایل secrets.env.example را ببینید).
+# نام برند و لحن در profile.yaml است.
+
+model: "claude-sonnet-5-5"
+timezone: "Asia/Tehran"
+post_times: ["11:00", "18:00"]
+max_chars: 1000
+source_max_chars: 2000
+max_output_tokens: 6000
+
+pillars:
+  - name: "نکتهٔ قهوه"
+    brief: "یک نکتهٔ کوتاه و کاربردی دربارهٔ دانه، آسیاب یا دم‌آوری؛ فقط از پایگاه دانش"
+  - name: "منو و رویداد"
+    brief: "معرفی یک آیتم منو یا رویداد کافه نمونه با اطلاعات پایگاه دانش"
+
+sources_file: "sources.yaml"
+source_poll_hours: 1
+max_new_per_poll: 1
+max_age_days: 3
+attribution: false
+
+auto_publish: true
+approval: review          # تا وقتی مشتری راضی نشده، هر پست اول برای تأیید صاحب کانال می‌آید؛ بعد: trusted و سپس auto
+auto_max_queue: 3
+auto_gap_minutes: 60
+auto_max_per_day: 4
+auto_from: "09:00"
+auto_to: "21:00"
+
+images: true
+image_ratio: 0.5
+image_min_width: 400
+
+exclude_words: []         # موضوع ممنوعی ندارد
+db_path: "data/agent.db"
+knowledge_dir: "knowledge"
