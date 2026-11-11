@@ -49,13 +49,29 @@ def _sessions(cfg: Settings):
 def _runtime(cfg: Settings) -> Runtime:
     if not cfg.llm_api_key or not cfg.llm_model:
         sys.exit("ORCHESTRA_LLM_API_KEY و ORCHESTRA_LLM_MODEL را در فایل .env پر کنید.")
-    if cfg.llm_provider == "anthropic":
-        provider = AnthropicProvider(cfg.llm_api_key, **({"base_url": cfg.llm_base_url} if cfg.llm_base_url else {}))
-    else:
-        provider = OpenAICompatibleProvider(cfg.llm_api_key, cfg.llm_base_url)
+    from .llm import check_base_url
+    try:
+        if cfg.llm_provider == "anthropic":
+            if cfg.llm_base_url:
+                check_base_url(cfg.llm_base_url)
+            provider = AnthropicProvider(cfg.llm_api_key, **({"base_url": cfg.llm_base_url} if cfg.llm_base_url else {}))
+        else:
+            check_base_url(cfg.llm_base_url)
+            provider = OpenAICompatibleProvider(cfg.llm_api_key, cfg.llm_base_url)
+    except ValueError as e:
+        hint = ""
+        if cfg.llm_provider != "anthropic" and "gemini" in cfg.llm_model.lower():
+            hint = "\nبرای Gemini: ORCHESTRA_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/"
+        sys.exit(f"{e}{hint}")
+    if cfg.llm_provider == "anthropic" and not cfg.llm_model.lower().startswith("claude"):
+        sys.exit("ORCHESTRA_LLM_PROVIDER روی anthropic است ولی مدل Claude نیست. برای Gemini و مدل‌های دیگر بنویسید: ORCHESTRA_LLM_PROVIDER=openai_compatible")
+
     def tier(model: str) -> list[Route]:
-        main = model or cfg.llm_model
-        return [Route(provider, main)] + ([Route(provider, cfg.llm_fallback_model)] if cfg.llm_fallback_model and cfg.llm_fallback_model != main else [])
+        """`model` may list several models separated by commas: they are tried in that order if one fails."""
+        names = [m.strip() for m in (model or cfg.llm_model).split(",") if m.strip()]
+        if cfg.llm_fallback_model:
+            names += [m.strip() for m in cfg.llm_fallback_model.split(",") if m.strip()]
+        return [Route(provider, m) for m in dict.fromkeys(names)]
     routes = tier(cfg.llm_model)
     sessions = _sessions(cfg)
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
@@ -174,7 +190,7 @@ def cmd_ask(cfg: Settings, a) -> None:
     set_runtime(rtm)
     dbos = _launch_dbos(cfg)
     day = datetime.now(TEHRAN).date() if not a.day else datetime.fromisoformat(a.day).date()
-    run_id = wf.run_id_for(a.org, a.request, day)
+    run_id = wf.fresh_run_id(rtm.sessions, wf.run_id_for(a.org, a.request, day))
     with SetWorkflowID(run_id):
         handle = dbos.start_workflow(wf.handle_request, a.org, a.request, day.isoformat(), _destinations(cfg, a.org),
                                      approval_timeout_s=a.timeout_hours * 3600)

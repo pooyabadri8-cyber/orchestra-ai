@@ -20,6 +20,16 @@ from sqlalchemy.orm import sessionmaker
 from .db import LLMCall
 
 
+BAD_URL_MESSAGE = "آدرس سرویس مدل («{url}») درست نیست؛ باید با https:// شروع شود (ORCHESTRA_LLM_BASE_URL در .env)"
+
+
+def check_base_url(url: str) -> None:
+    from urllib.parse import urlparse
+    u = urlparse(url or "")
+    if u.scheme not in ("http", "https") or not u.netloc:
+        raise ValueError(BAD_URL_MESSAGE.format(url=url))
+
+
 class LLMError(Exception):
     def __init__(self, message: str, retryable: bool = True):
         super().__init__(message)
@@ -58,6 +68,8 @@ class AnthropicProvider:
         async with httpx.AsyncClient(timeout=self.timeout) as http:
             try:
                 r = await http.post(f"{self.base_url}/v1/messages", json=body, headers=headers)
+            except (httpx.UnsupportedProtocol, httpx.InvalidURL) as e:
+                raise LLMError(BAD_URL_MESSAGE.format(url=self.base_url), retryable=False) from e
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:
@@ -82,6 +94,8 @@ class OpenAICompatibleProvider:
             try:
                 r = await http.post(f"{self.base_url.rstrip('/')}/chat/completions", json=body,
                                     headers={"Authorization": f"Bearer {self.api_key}"})
+            except (httpx.UnsupportedProtocol, httpx.InvalidURL) as e:
+                raise LLMError(BAD_URL_MESSAGE.format(url=self.base_url), retryable=False) from e
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:

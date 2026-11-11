@@ -62,6 +62,22 @@ def run_id_for(org_id: str, request: str, day: date) -> str:
     return f"{org_id}:req:{day.isoformat()}:{digest}"
 
 
+RESUMABLE = ("running", "planning", "awaiting_approval", "approved", "rejected")
+
+
+def fresh_run_id(sessions, base: str) -> str:
+    """The same request on the same day is one run (so a post is never made twice). But a run that failed, was
+    blocked or needed input must not make a corrected re-run return the old failure: that one gets a new attempt id."""
+    with sessions() as s:
+        n = 0
+        while True:
+            rid = base if n == 0 else f"{base}:r{n}"
+            run = s.get(Run, rid)
+            if run is None or run.status in RESUMABLE:
+                return rid
+            n += 1
+
+
 def price_source(subject: str) -> str:
     return f"import:prices:{subject}"
 
