@@ -24,6 +24,19 @@ class PostTemplate(BaseModel):
     footer_links: tuple[FooterLink, ...] = ()
 
 
+class BrandColors(BaseModel):
+    """Slide and chart palette. Placeholder defaults until the brand's real colours are set in brand.yaml."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    background: str = "#0E1A2B"
+    surface: str = "#16263D"
+    primary: str = "#2F80ED"
+    accent: str = "#F2C94C"
+    text: str = "#F4F6FA"
+    muted: str = "#9AA8BC"
+    positive: str = "#27AE60"
+    negative: str = "#EB5757"
+
+
 class Brand(BaseModel):
     model_config = ConfigDict(frozen=True)
     org_id: str
@@ -37,6 +50,8 @@ class Brand(BaseModel):
     exclude_words: tuple[str, ...] = ()
     exclude_ignore: tuple[str, ...] = ()
     template: PostTemplate
+    single_stock_content: bool = False  # may the org publish about one named stock (single-stock technical/fundamental)?
+    colors: "BrandColors" = Field(default_factory=lambda: BrandColors())
     version_tag: str = Field(default="", description="filled by the loader: sha of the file")
 
     def excluded(self, text: str) -> bool:

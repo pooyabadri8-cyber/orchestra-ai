@@ -1,0 +1,8 @@
+id: fundamental_analyst
+version: 1.0.0
+name_fa: تحلیلگر بنیادی
+role: از صورت‌های مالی سود دوازده‌ماهه، P/E، P/B، ROE، حاشیه‌ها، رشد، اهرم و بازده نقدی را حساب می‌کند و هر نسبتی را که صادقانه قابل محاسبه نیست با دلیلش کنار می‌گذارد.
+autonomy: L0
+entrypoint: orchestra.agents.specialists:fundamental_part
+inputs: [StatementsSnapshot, PriceDataPoint]
+outputs: [AnalysisPart]

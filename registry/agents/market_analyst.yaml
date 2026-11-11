@@ -1,0 +1,8 @@
+id: market_analyst
+version: 1.0.0
+name_fa: تحلیلگر بازار
+role: وضعیت کل بازار، جریان پول حقیقی و گروه‌های پیشرو را از دادهٔ ثبت‌شده استخراج می‌کند؛ صندوق‌ها و سهم‌های تکی را طبق قوانین سازمان کنار می‌گذارد.
+autonomy: L0
+entrypoint: orchestra.agents.analysis:analyze_market_close
+inputs: [DataSnapshot]
+outputs: [AnalysisPart]

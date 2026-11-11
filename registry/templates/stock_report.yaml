@@ -1,0 +1,25 @@
+id: stock_report
+version: 1.0.0
+name_fa: گزارش تحلیلی یک نماد
+single_stock: true
+description: >-
+  تحلیل تکنیکال و بنیادی یک نماد مشخص بر پایهٔ سابقهٔ قیمت و صورت‌های مالی واردشده؛ بدون توصیهٔ خرید یا فروش.
+  خروجی برای تلگرام، بله و اینستاگرام (کاروسل).
+examples:
+  - یک تحلیل تکنیکال و بنیادی از فولاد بنویس
+  - وضعیت تکنیکال خودرو را برای اینستاگرام آماده کن
+params:
+  - {name: subject, type: text, required: true, subject: stock, description: نام نماد}
+  - {name: platforms, type: platforms, required: false, default: [telegram, bale, instagram], description: کانال‌های انتشار}
+  - {name: sections, type: sections, required: false, default: [technical, fundamental], description: بخش‌های تحلیل}
+  - {name: focus, type: text, required: false, description: نکته یا زاویهٔ خاصی که کاربر خواسته}
+steps:
+  - {id: technical, agent: technical_analyst, when: "section:technical"}
+  - {id: fundamental, agent: fundamental_analyst, when: "section:fundamental"}
+  - {id: write, agent: writer, depends_on: [technical, fundamental]}
+  - {id: verify, agent: fact_checker, depends_on: [write]}
+  - {id: edit, agent: editor, depends_on: [verify]}
+  - {id: comply, agent: compliance_officer, depends_on: [verify]}
+  - {id: design, agent: designer, depends_on: [verify], when: "platform:instagram"}
+  - {id: approve, agent: human_approval, depends_on: [edit, comply, design]}
+  - {id: publish, agent: publisher, depends_on: [approve]}

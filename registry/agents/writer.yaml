@@ -1,0 +1,9 @@
+id: writer
+version: 1.1.0
+name_fa: نویسنده
+role: از جدول داده و واقعیت‌ها، متن پست تلگرام و بله، کپشن اینستاگرام و متن اسلایدها را می‌نویسد؛ به‌جای عدد فقط توکن می‌گذارد.
+autonomy: L1
+entrypoint: orchestra.agents.multichannel:write_multichannel
+model_tier: writer
+inputs: [AnalysisReport]
+outputs: [MultiChannelDraft]

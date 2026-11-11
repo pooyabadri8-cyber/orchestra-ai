@@ -1,0 +1,8 @@
+id: designer
+version: 1.0.0
+name_fa: طراح
+role: نمودارها را از داده با کد رسم می‌کند و اسلایدهای برند را از قالب نسخه‌دار می‌سازد؛ کنترل کیفی خودکار (سرریز متن، اندازه، داده) دارد.
+autonomy: L0
+entrypoint: orchestra.visual.render:render_carousel
+inputs: [VerifiedContent, AnalysisReport, BrandKit]
+outputs: [VisualAssetSet]

@@ -1,0 +1,8 @@
+id: technical_analyst
+version: 1.0.0
+name_fa: تحلیلگر تکنیکال
+role: میانگین‌های متحرک، RSI، MACD، باندهای بولینگر، ATR، استوکاستیک، سطوح حمایت و مقاومت و روند را در کد محاسبه می‌کند و سیگنال‌ها را بدون عدد توصیف می‌کند.
+autonomy: L0
+entrypoint: orchestra.agents.specialists:technical_part
+inputs: [PriceHistorySnapshot]
+outputs: [AnalysisPart]

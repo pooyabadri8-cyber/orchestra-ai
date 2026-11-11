@@ -1,0 +1,9 @@
+id: editor
+version: 1.0.0
+name_fa: ویراستار
+role: وضوح، ساختار، لحن برند و کاربردی بودن متن را بررسی می‌کند و فقط ایراد ثبت می‌کند؛ متن را خودش تغییر نمی‌دهد.
+autonomy: L1
+entrypoint: orchestra.agents.reviewers:editorial_review
+model_tier: reviewer
+inputs: [VerifiedContent]
+outputs: [Findings]

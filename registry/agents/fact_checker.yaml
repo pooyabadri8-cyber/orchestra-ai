@@ -1,0 +1,8 @@
+id: fact_checker
+version: 1.0.0
+name_fa: راستی‌آزما
+role: هر توکن را از دادهٔ ثبت‌شده به عدد فارسی تبدیل می‌کند، برای هر عدد یک ادعا ثبت می‌کند و هر عددی را که نویسنده خودش نوشته باشد متوقف می‌کند.
+autonomy: L0
+entrypoint: orchestra.agents.multichannel:verify_multichannel
+inputs: [MultiChannelDraft, AnalysisReport]
+outputs: [VerifiedContent]

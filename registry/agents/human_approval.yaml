@@ -1,0 +1,8 @@
+id: human_approval
+version: 1.0.0
+name_fa: تأییدکنندهٔ انسانی
+role: بستهٔ نهایی (متن هر کانال، تصویرها، ایرادهای ثبت‌شده و منبع هر عدد) را به صاحب کانال نشان می‌دهد و تصمیم او را به هش همان بسته گره می‌زند.
+autonomy: human
+entrypoint: orchestra.approvals:decide
+inputs: [PublicationPackage]
+outputs: [ApprovalDecision]

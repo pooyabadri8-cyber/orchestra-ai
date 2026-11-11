@@ -1,0 +1,8 @@
+id: publisher
+version: 1.0.0
+name_fa: ناشر
+role: بستهٔ تأییدشده را دقیقاً همان‌طور که تأیید شده به هر کانال می‌فرستد؛ هرگز چیزی را دو بار نمی‌فرستد و ارسال نامعلوم را به انسان می‌سپارد.
+autonomy: L0
+entrypoint: orchestra.publishing.publisher:Publisher
+inputs: [PublicationPackage, ApprovalDecision]
+outputs: [PublishReceipt]

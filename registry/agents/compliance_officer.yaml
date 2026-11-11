@@ -1,0 +1,9 @@
+id: compliance_officer
+version: 1.0.0
+name_fa: مسئول انطباق
+role: قواعد سازمان (عبارت‌های ممنوع، موضوع‌های ممنوع، لینک) را با کد و توصیهٔ ضمنی، وعدهٔ سود و پیش‌بینی را با مدل بررسی می‌کند؛ فقط می‌تواند سطح ریسک را بالا ببرد.
+autonomy: L1
+entrypoint: orchestra.agents.reviewers:compliance_review
+model_tier: reviewer
+inputs: [VerifiedContent]
+outputs: [Findings]

@@ -1,0 +1,28 @@
+id: market_report
+version: 1.0.0
+name_fa: گزارش بازار
+description: >-
+  گزارش پایان روز بازار سهام: شاخص کل، ارزش معاملات خرد، جریان پول حقیقی، شدت ورود یا خروج پول و گروه‌های پیشرو؛
+  به‌اختیار با تحلیل تکنیکال شاخص یا یک نماد و تحلیل بنیادی یک نماد. خروجی برای تلگرام، بله و اینستاگرام (کاروسل).
+examples:
+  - گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن
+  - تحلیل بازار امروز با تحلیل تکنیکال شاخص کل برای اینستاگرام
+  - گزارش بازار امروز به همراه تحلیل بنیادی و تکنیکال فولاد
+params:
+  - {name: day, type: date, required: false, description: روز معاملاتی؛ اگر گفته نشد امروز}
+  - {name: platforms, type: platforms, required: false, default: [telegram, bale, instagram], description: کانال‌های انتشار}
+  - {name: technical_subject, type: text, required: false, subject: index_or_stock, description: نماد یا شاخصی که تحلیل تکنیکال می‌خواهد؛ نیازمند سابقهٔ قیمت واردشده}
+  - {name: fundamental_subject, type: text, required: false, subject: stock, description: نمادی که تحلیل بنیادی می‌خواهد؛ نیازمند صورت‌های مالی واردشده}
+  - {name: focus, type: text, required: false, description: نکته یا زاویهٔ خاصی که کاربر خواسته}
+steps:
+  - {id: acquire, agent: data_acquisition}
+  - {id: market, agent: market_analyst, depends_on: [acquire]}
+  - {id: technical, agent: technical_analyst, depends_on: [acquire], when: technical_subject}
+  - {id: fundamental, agent: fundamental_analyst, depends_on: [acquire], when: fundamental_subject}
+  - {id: write, agent: writer, depends_on: [market, technical, fundamental]}
+  - {id: verify, agent: fact_checker, depends_on: [write]}
+  - {id: edit, agent: editor, depends_on: [verify]}
+  - {id: comply, agent: compliance_officer, depends_on: [verify]}
+  - {id: design, agent: designer, depends_on: [verify], when: "platform:instagram"}
+  - {id: approve, agent: human_approval, depends_on: [edit, comply, design]}
+  - {id: publish, agent: publisher, depends_on: [approve]}

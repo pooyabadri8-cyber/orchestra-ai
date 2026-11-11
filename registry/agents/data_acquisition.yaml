@@ -1,0 +1,8 @@
+id: data_acquisition
+version: 1.0.0
+name_fa: کارمند جمع‌آوری داده
+role: داده‌های بازار را از منابع تعیین‌شده می‌گیرد، پاسخ خام را نگه می‌دارد و هر عدد را با منبع و دقتش ثبت می‌کند. هیچ عددی را تخمین نمی‌زند.
+autonomy: L0
+entrypoint: orchestra.data.acquisition:acquire
+tools: [http_fetch, asset_store]
+outputs: [DataSnapshot]

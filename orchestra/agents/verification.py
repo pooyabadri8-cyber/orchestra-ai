@@ -79,27 +79,35 @@ def verify(draft: Draft, report: AnalysisReport, brand: Brand) -> Verified:
 def rule_checks(parts: PostParts, brand: Brand) -> list[Finding]:
     out: list[Finding] = []
     body = "\n".join([parts.headline, *parts.paragraphs, parts.cta])
-    n = normalize(body)
     if len(parts.paragraphs) < 2:
         out.append(Finding("R-SHAPE", "block", "پست باید دست‌کم دو بند داشته باشد"))
     if not parts.headline.strip():
         out.append(Finding("R-SHAPE", "block", "تیتر خالی است"))
     elif len(parts.headline) > 90:
         out.append(Finding("R-HEADLINE", "warn", f"تیتر {len(parts.headline)} نویسه است (بیش از ۹۰)"))
-    hits = sorted({p for p in brand.guard_phrases if normalize(p) in n})
-    if hits:
-        out.append(Finding("R-GUARD", "block", "عبارت ممنوع: " + "، ".join(hits[:3])))
-    if brand.excluded(body):
-        out.append(Finding("R-EXCLUDED", "block", "متن دربارهٔ موضوع ممنوع (مثلاً صندوق‌ها) حرف می‌زند"))
-    if _LINK.search(body):
-        out.append(Finding("R-LINK", "block", "لینک یا آی‌دی در متن نویسنده هست"))
-    if _MARKUP.search(body):
-        out.append(Finding("R-MARKUP", "block", "تگ HTML در متن نویسنده هست؛ قالب‌بندی فقط کار قالب است"))
-    if any(m in n for m in LEAK_MARKERS):
-        out.append(Finding("R-LEAK", "block", "نشانهٔ خروجی خراب مدل در متن هست"))
-    latin, letters = len(_LATIN.findall(body)), len(_LETTER.findall(body))
-    if letters and latin / letters > 0.35:
-        out.append(Finding("R-LATIN", "block", "بخش زیادی از متن انگلیسی است"))
+    out += text_rules(body, brand)
     if visible_length(telegram_html(brand.template, parts)) > TG_LIMIT:
         out.append(Finding("R-LENGTH", "block", "پست از حد تلگرام بلندتر است"))
+    return out
+
+
+def text_rules(body: str, brand: Brand, where: str = "") -> list[Finding]:
+    """Rules every piece of model text must pass, on any channel."""
+    out: list[Finding] = []
+    n = normalize(body)
+    pre = f"{where}: " if where else ""
+    hits = sorted({p for p in brand.guard_phrases if normalize(p) in n})
+    if hits:
+        out.append(Finding("R-GUARD", "block", pre + "عبارت ممنوع: " + "، ".join(hits[:3]), where))
+    if brand.excluded(body):
+        out.append(Finding("R-EXCLUDED", "block", pre + "متن دربارهٔ موضوع ممنوع (مثلاً صندوق‌ها) حرف می‌زند", where))
+    if _LINK.search(body):
+        out.append(Finding("R-LINK", "block", pre + "لینک یا آی‌دی در متن نویسنده هست", where))
+    if _MARKUP.search(body):
+        out.append(Finding("R-MARKUP", "block", pre + "تگ HTML در متن نویسنده هست؛ قالب‌بندی فقط کار قالب است", where))
+    if any(m in n for m in LEAK_MARKERS):
+        out.append(Finding("R-LEAK", "block", pre + "نشانهٔ خروجی خراب مدل در متن هست", where))
+    latin, letters = len(_LATIN.findall(body)), len(_LETTER.findall(body))
+    if letters and latin / letters > 0.35:
+        out.append(Finding("R-LATIN", "block", pre + "بخش زیادی از متن انگلیسی است", where))
     return out

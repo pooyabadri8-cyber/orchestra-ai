@@ -16,6 +16,7 @@ from ..brand import Brand
 from ..content.calendar import long_date
 from ..content.numbers import BoundPoint, format_point
 from ..db import DataPointRow
+from ..visual.charts import ChartSpec
 
 LABELS = {
     "index.total.value": "شاخص کل بورس",
@@ -44,6 +45,7 @@ class AnalysisReport(BaseModel):
     points: tuple[BoundPoint, ...]
     facts: tuple[str, ...]
     excluded: tuple[str, ...]  # subjects removed because of a forbidden topic, for the audit trail
+    charts: tuple[ChartSpec, ...] = ()
 
     def by_key(self) -> dict[str, BoundPoint]:
         return {p.key: p for p in self.points}
