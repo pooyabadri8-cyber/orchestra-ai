@@ -214,7 +214,7 @@ def cmd_ask(cfg: Settings, a) -> None:
     set_runtime(rtm)
     dbos = _launch_dbos(cfg)
     day = datetime.now(TEHRAN).date() if not a.day else datetime.fromisoformat(a.day).date()
-    run_id = wf.fresh_run_id(rtm.sessions, wf.run_id_for(a.org, a.request, day))
+    run_id = wf.fresh_run_id(rtm.sessions, wf.run_id_for(a.org, a.request, day), new=a.new)
     with SetWorkflowID(run_id):
         handle = dbos.start_workflow(wf.handle_request, a.org, a.request, day.isoformat(), _destinations(cfg, a.org),
                                      approval_timeout_s=a.timeout_hours * 3600)
@@ -317,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init"); p.add_argument("--org", default="pouyan")
     p = sub.add_parser("run"); p.add_argument("--org", default="pouyan"); p.add_argument("--day"); p.add_argument("--timeout-hours", type=int, default=3)
+    p.add_argument("--new", action="store_true", help="start a new attempt even if the same request is already waiting")
     p = sub.add_parser("ask"); p.add_argument("request"); p.add_argument("--org", default="pouyan"); p.add_argument("--day")
     p.add_argument("--timeout-hours", type=int, default=3)
     p = sub.add_parser("import-prices"); p.add_argument("file"); p.add_argument("--subject", required=True)

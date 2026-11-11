@@ -33,7 +33,7 @@ def main() -> int:
     text = (ROOT / "request.txt").read_text(encoding="utf-8-sig").strip()
     with open(LOG, "w", encoding="utf-8") as log:
         log.write(f"درخواست: {text}\n\n")
-        out = run(["ask", text], log)
+        out = run(["ask", "--new", text], log)
         m = re.search(r"اجرا: (\S+) → awaiting_approval", out)
         if m:
             log.write("\n\n======== show ========\n")

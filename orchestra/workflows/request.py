@@ -65,15 +65,16 @@ def run_id_for(org_id: str, request: str, day: date) -> str:
 RESUMABLE = ("running", "planning", "awaiting_approval", "approved", "rejected")
 
 
-def fresh_run_id(sessions, base: str) -> str:
+def fresh_run_id(sessions, base: str, *, new: bool = False) -> str:
     """The same request on the same day is one run (so a post is never made twice). But a run that failed, was
-    blocked or needed input must not make a corrected re-run return the old failure: that one gets a new attempt id."""
+    blocked or needed input must not make a corrected re-run return the old failure: that one gets a new attempt id.
+    new=True (testing) always starts another attempt, even if an earlier one is still waiting for approval."""
     with sessions() as s:
         n = 0
         while True:
             rid = base if n == 0 else f"{base}:r{n}"
             run = s.get(Run, rid)
-            if run is None or run.status in RESUMABLE:
+            if run is None or (run.status in RESUMABLE and not new):
                 return rid
             n += 1
 

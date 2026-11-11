@@ -102,3 +102,15 @@ def test_unreachable_model_service_fails_fast_with_a_clear_message(tmp_path, mon
     with respx.mock() as router:  # any HTTP answer, even 404, means the service is reachable
         router.get("https://llm.example/v1/").mock(return_value=httpx.Response(404))
         cli._check_llm_reachable(cfg)
+
+
+def test_new_attempt_even_when_earlier_one_waits(tmp_path):
+    from orchestra.db import Base, Run, make_engine, make_sessionmaker
+    from orchestra.workflows.request import fresh_run_id
+    engine = make_engine(f"sqlite:///{tmp_path / 'n.db'}")
+    Base.metadata.create_all(engine)
+    sessions = make_sessionmaker(engine)
+    with sessions.begin() as s:
+        s.add(Run(id="a", org_id="o", template="t", status="awaiting_approval"))
+    assert fresh_run_id(sessions, "a") == "a"
+    assert fresh_run_id(sessions, "a", new=True) == "a:r1"
