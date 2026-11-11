@@ -114,3 +114,11 @@ def test_new_attempt_even_when_earlier_one_waits(tmp_path):
         s.add(Run(id="a", org_id="o", template="t", status="awaiting_approval"))
     assert fresh_run_id(sessions, "a") == "a"
     assert fresh_run_id(sessions, "a", new=True) == "a:r1"
+
+
+def test_ask_accepts_new_flag(monkeypatch):
+    from orchestra import cli
+    seen = {}
+    monkeypatch.setattr(cli, "cmd_ask", lambda cfg, a: seen.update(new=a.new, request=a.request))
+    cli.main(["ask", "--new", "سلام"])
+    assert seen == {"new": True, "request": "سلام"}
