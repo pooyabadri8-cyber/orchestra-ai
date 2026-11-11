@@ -3,7 +3,6 @@ import asyncio
 import random
 
 import pytest
-from sqlalchemy import update
 
 from orchestra import audit
 from orchestra.approvals import decide, store_package

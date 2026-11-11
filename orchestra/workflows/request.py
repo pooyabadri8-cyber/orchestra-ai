@@ -306,6 +306,15 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
 @DBOS.workflow()
 async def handle_request(org_id: str, request: str, day_iso: str, destinations: list[list[str]], source_id: str = "bourse_trader",
                          approval_timeout_s: int = 3 * 3600, window_minutes: int = 240) -> dict[str, Any]:
+    """Any unexpected error ends the run as failed with its reason, so nothing waits on a run that stopped."""
+    try:
+        return await _handle_request(org_id, request, day_iso, destinations, source_id, approval_timeout_s, window_minutes)
+    except Exception as e:  # noqa: BLE001
+        return s_finish(DBOS.workflow_id, "failed", detail={"error": f"{type(e).__name__}: {e}"[:600]})
+
+
+async def _handle_request(org_id: str, request: str, day_iso: str, destinations: list[list[str]], source_id: str = "bourse_trader",
+                         approval_timeout_s: int = 3 * 3600, window_minutes: int = 240) -> dict[str, Any]:
     run_id = DBOS.workflow_id
     s_open(run_id, org_id, request)
     available = sorted({p for _, p in destinations})

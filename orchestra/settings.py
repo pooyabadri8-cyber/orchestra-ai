@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ORCHESTRA_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="ORCHESTRA_", env_file=".env", env_file_encoding="utf-8-sig", extra="ignore")
 
     database_url: str = "postgresql+psycopg://orchestra:orchestra@localhost:5432/orchestra"
     system_database_url: str = "postgresql://orchestra:orchestra@localhost:5432/orchestra_dbos"  # DBOS workflow state
@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_fallback_model: str = ""  # optional second model on the same provider
     llm_max_calls_per_run: int = 20  # manager + writer (with retries) + two reviewers
+
+    # data sources: a different address for the market page (a mirror, or a local copy for testing)
+    bourse_trader_url: str = ""
 
     # publishing
     max_publish_attempts: int = 4

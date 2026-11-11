@@ -3,7 +3,6 @@ composer that builds the writer's data table."""
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
 
 from orchestra.agents.specialists import Part, compose, fundamental_part, technical_part
 from orchestra.content.calendar import to_jalali

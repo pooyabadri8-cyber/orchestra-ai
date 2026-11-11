@@ -116,8 +116,9 @@ def test_new_attempt_even_when_earlier_one_waits(tmp_path):
     assert fresh_run_id(sessions, "a", new=True) == "a:r1"
 
 
-def test_ask_accepts_new_flag(monkeypatch):
+def test_ask_accepts_new_flag(monkeypatch, tmp_path):
     from orchestra import cli
+    monkeypatch.setenv("ORCHESTRA_DATABASE_URL", f"sqlite:///{tmp_path / 'a.db'}")
     seen = {}
     monkeypatch.setattr(cli, "cmd_ask", lambda cfg, a: seen.update(new=a.new, request=a.request))
     cli.main(["ask", "--new", "سلام"])

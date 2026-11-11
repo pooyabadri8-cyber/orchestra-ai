@@ -1,5 +1,4 @@
 """Technical indicators against a published reference and against independent re-implementations."""
-import math
 import random
 from datetime import date, timedelta
 

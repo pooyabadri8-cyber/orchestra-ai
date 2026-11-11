@@ -40,6 +40,8 @@ from .runtime import Runtime, set_runtime
 from .settings import Settings, load_settings
 
 TEHRAN = ZoneInfo("Asia/Tehran")
+APP_VERSION = "orchestra-1"
+DECIDE_TIMEOUT_S = 180
 
 
 def _sessions(cfg: Settings):
@@ -74,15 +76,21 @@ def _runtime(cfg: Settings) -> Runtime:
         return [Route(provider, m) for m in dict.fromkeys(names)]
     routes = tier(cfg.llm_model)
     sessions = _sessions(cfg)
+    market = BourseTraderSource()
+    if cfg.bourse_trader_url:
+        market.url = cfg.bourse_trader_url
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
                    gateway=Gateway(sessions, {"writer": routes, "manager": tier(cfg.manager_model), "reviewer": tier(cfg.reviewer_model)},
                                    max_calls_per_run=cfg.llm_max_calls_per_run),
-                   fetcher=http_fetcher(), sources={"bourse_trader": BourseTraderSource()}, brand_root=cfg.orgs_dir)
+                   fetcher=http_fetcher(), sources={"bourse_trader": market}, brand_root=cfg.orgs_dir)
 
 
 def _launch_dbos(cfg: Settings):
     from dbos import DBOS
-    DBOS(config={"name": "orchestra", "system_database_url": cfg.system_database_url, "log_level": "WARNING"})
+    # A fixed application version: DBOS otherwise derives it from the code, and a run that waits for approval would
+    # never resume after any code update (approve would hang). Bump it only when a workflow's step order changes.
+    DBOS(config={"name": "orchestra", "system_database_url": cfg.system_database_url, "log_level": "ERROR",
+                 "application_version": APP_VERSION})
     DBOS.launch()
     return DBOS
 
@@ -161,23 +169,12 @@ def cmd_run(cfg: Settings, a) -> None:
     with SetWorkflowID(run_id):
         handle = dbos.start_workflow(wf.market_close, a.org, day.isoformat(), _destinations(cfg, a.org),
                                      approval_timeout_s=a.timeout_hours * 3600)
-    import time
-    while True:
-        with rtm.sessions() as s:
-            run = s.get(Run, run_id)
-            status = run.status if run else "starting"
-        if status != "running" and status != "starting":
-            break
-        time.sleep(1)
-    print(f"اجرا: {run_id} → {status}")
-    if status == "awaiting_approval":
-        print(f"متن را ببینید:  python -m orchestra.cli show {run_id}")
-        leave_runs_waiting()
-    print(json.dumps(handle.get_result(), ensure_ascii=False, indent=1))
-    dbos.destroy()
+    _wait_and_report(rtm, dbos, run_id, handle)
 
 
 def _wait_and_report(rtm, dbos, run_id: str, handle) -> None:
+    """Wait until the run needs the owner or has ended. The workflow engine's own status is watched too, so a run
+    that stopped for any reason can never leave this loop waiting forever."""
     import time
 
     from .db import LLMCall
@@ -189,6 +186,15 @@ def _wait_and_report(rtm, dbos, run_id: str, handle) -> None:
             last = s.execute(select(LLMCall.step_key).where(LLMCall.run_id == run_id).order_by(LLMCall.id.desc()).limit(1)).scalar_one_or_none()
         if status not in ("running", "starting", "planning"):
             break
+        engine = dbos.get_workflow_status(run_id)
+        if engine is not None and engine.status not in ("PENDING", "ENQUEUED"):
+            time.sleep(1)  # the run row is written by the last step; give it a moment, then report what the engine says
+            with rtm.sessions() as s:
+                run = s.get(Run, run_id)
+                status = run.status if run else "failed"
+            if status in ("running", "starting", "planning"):
+                status = "failed"
+            break
         if time.monotonic() - last_note >= 15:
             last_note = time.monotonic()
             print(f"… {int(time.monotonic() - started)} ثانیه؛ وضعیت: {status}؛ آخرین مرحلهٔ مدل: {last or '-'}", flush=True)
@@ -197,9 +203,14 @@ def _wait_and_report(rtm, dbos, run_id: str, handle) -> None:
     if status == "awaiting_approval":
         print(f"محتوای هر کانال و اسلایدها را ببینید:  python -m orchestra.cli show {run_id}")
         leave_runs_waiting()
-    result = handle.get_result()
+    try:
+        result = handle.get_result()
+    except Exception as e:  # noqa: BLE001  the engine recorded an error: show it plainly, no traceback
+        result = {"run_id": run_id, "status": "failed", "error": f"{type(e).__name__}: {str(e)[:500]}"}
     if result.get("message"):
         print(result["message"])
+    if result.get("error"):
+        print(f"خطا: {result['error']}")
     print(json.dumps(result, ensure_ascii=False, indent=1))
     dbos.destroy()
 
@@ -276,9 +287,26 @@ def _decide(cfg: Settings, a, decision: str) -> None:
         pkg = s.get(PackageRow, run.package_id)
     set_runtime(_runtime(cfg))
     dbos = _launch_dbos(cfg)  # recovers the waiting run in this process
+    status = dbos.get_workflow_status(a.run_id)
+    if status is None or status.app_version != APP_VERSION:
+        dbos.destroy()
+        sys.exit("این اجرا با نسخهٔ قدیمی‌تر برنامه ساخته شده و دیگر قابل ادامه نیست. همان درخواست را دوباره اجرا کنید (run_ask.bat).")
     wf.submit_decision(a.run_id, pkg.package_hash, decision, f"user:{os.environ.get('USERNAME') or os.environ.get('USER') or 'owner'}",
                        destinations=a.only or None, reason=getattr(a, "reason", None))
-    print(json.dumps(dbos.retrieve_workflow(a.run_id).get_result(), ensure_ascii=False, indent=1))
+    import time
+    deadline = time.monotonic() + DECIDE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        st = dbos.get_workflow_status(a.run_id)
+        if st is not None and st.status not in ("PENDING", "ENQUEUED"):
+            break
+        time.sleep(0.5)
+    else:
+        print("تصمیم ثبت شد ولی اجرا در زمان معقول تمام نشد؛ وضعیت را با `show` ببینید.")
+        leave_runs_waiting(1)
+    try:
+        print(json.dumps(dbos.retrieve_workflow(a.run_id).get_result(), ensure_ascii=False, indent=1))
+    except Exception as e:  # the run itself failed after the decision; show why instead of a traceback
+        print(f"اجرا پس از تصمیم با خطا تمام شد: {type(e).__name__}: {str(e)[:300]}")
     dbos.destroy()
 
 
@@ -332,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pause"); p.add_argument("--org", default="pouyan")
     p = sub.add_parser("resume"); p.add_argument("--org", default="pouyan")
     a = ap.parse_args(argv)
+    if a.cmd != "init":
+        create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
     actor = f"user:{os.environ.get('USERNAME') or os.environ.get('USER') or 'owner'}"
     if a.cmd == "init":
         cmd_init(cfg, a)
@@ -368,7 +398,7 @@ def _load_dotenv() -> None:
     path = ".env"
     if not os.path.exists(path):
         return
-    for line in open(path, encoding="utf-8"):
+    for line in open(path, encoding="utf-8-sig"):  # Notepad may save a BOM
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
