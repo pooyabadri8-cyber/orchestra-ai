@@ -78,6 +78,7 @@ def test_store_flow():
     when = datetime.now(timezone.utc) - timedelta(minutes=1)
     s.schedule(p.id, when)
     assert [x.id for x in s.due(datetime.now(timezone.utc))] == [p.id]
+    assert s.begin_send(p.id)
     s.mark_published(p.id, 77)
     assert s.get(p.id).status == "published" and not s.due(datetime.now(timezone.utc))
     s.reject(p.id)  # no-op for published

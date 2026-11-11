@@ -34,13 +34,13 @@ def seed(store: Store, tag="A"):
     """A bit of life: posts in several states and the owner's decisions."""
     now = datetime.now(timezone.utc)
     p1 = store.add_draft("t1", None, ta.good(1, f"تیتر {tag} یک"), now)       # approved unchanged, published
-    store.log_event(p1.id, "approved"); store.mark_published(p1.id, 11)
+    store.log_event(p1.id, "approved"); store.begin_send(p1.id); store.mark_published(p1.id, 11)
     p2 = store.add_draft("t2", None, ta.good(2, f"تیتر {tag} دو"), now)       # edited, then approved, published
-    store.update_text(p2.id, ta.good(2, f"تیتر {tag} دو ویرایش")); store.log_event(p2.id, "approved"); store.mark_published(p2.id, 12)
+    store.update_text(p2.id, ta.good(2, f"تیتر {tag} دو ویرایش")); store.log_event(p2.id, "approved"); store.begin_send(p2.id); store.mark_published(p2.id, 12)
     p3 = store.add_draft("t3", None, ta.good(3, f"تیتر {tag} سه"), now)       # rejected
     store.reject(p3.id)
     p4 = store.add_draft("t4", None, ta.good(4, f"تیتر {tag} چهار"), now)     # auto, published
-    store.log_event(p4.id, "auto"); store.mark_published(p4.id, 13)
+    store.log_event(p4.id, "auto"); store.begin_send(p4.id); store.mark_published(p4.id, 13)
     p5 = store.add_draft("t5", None, ta.good(5, f"تیتر {tag} پنج x&y"), now)  # held, then dead
     store.log_event(p5.id, "held"); store.begin_send(p5.id); store.mark_dead(p5.id, "قطع <img src=x onerror=1>")
     p6 = store.add_draft("t6", None, ta.good(6, f"تیتر {tag} شش"), now)       # waiting in the queue

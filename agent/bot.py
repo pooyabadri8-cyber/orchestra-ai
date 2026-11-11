@@ -510,6 +510,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         now = datetime.now(timezone.utc)
         when = parse_iso(post.proposed_at) if post.proposed_at else None
+        if (post.pillar or "").startswith("daily:"):
+            # a timed post (market report, analysis) belongs to its own time: never move it to a later slot of
+            # post_times, where it would go out with old numbers. Late but still fresh = now; too late = refused.
+            target = when or now
+            if now - target > DAILY_STALE:
+                await q.answer("این پست زمان‌دار دیر شده و داده‌اش کهنه است؛ منتشر نمی‌شود. اگر باز هم می‌خواهید، «🚀 انتشار الان» را بزنید.", show_alert=True)
+                return
+            store.schedule(post.id, max(target, now))
+            await q.answer("زمان‌بندی شد")
+            await q.edit_message_reply_markup(None)
+            await q.message.reply_text(f"🕒 پست #{post.id} برای {fmt_local(iso(max(target, now)), cfg.tz)} زمان‌بندی شد.")
+            return
         taken = store.taken_slots() - ({post.scheduled_at} if post.scheduled_at else set())
         if not when or when < now or iso(when) in taken:
             slot = next_slots(now, cfg.tz, cfg.post_times, taken, 1)

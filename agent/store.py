@@ -130,14 +130,30 @@ class Store:
     def get(self, post_id: int) -> Post | None:
         return self._post(self.db.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone())
 
+    # An approved (scheduled) post that is changed goes back to 'draft': what was approved is no longer what would be
+    # published, so it needs a new approval. Its time is kept as the proposed time.
+    _BACK_TO_DRAFT = (
+        "status=CASE WHEN status='scheduled' THEN 'draft' ELSE status END, "
+        "proposed_at=CASE WHEN status='scheduled' THEN scheduled_at ELSE proposed_at END, "
+        "scheduled_at=CASE WHEN status='scheduled' THEN NULL ELSE scheduled_at END"
+    )
+
     def update_text(self, post_id: int, text: str) -> None:
-        cur = self.db.execute("UPDATE posts SET text=?, error=NULL WHERE id=? AND status IN ('draft','scheduled','failed')", (text, post_id))
+        cur = self.db.execute(
+            f"UPDATE posts SET text=?, error=NULL, {self._BACK_TO_DRAFT} WHERE id=? AND status IN ('draft','scheduled','failed')",
+            (text, post_id),
+        )
         if cur.rowcount:
             self._ev(post_id, "edited")
         self.db.commit()
 
     def set_image(self, post_id: int, path: str | None) -> None:
-        self.db.execute("UPDATE posts SET image_path=? WHERE id=? AND status IN ('draft','scheduled','failed')", (path, post_id))
+        cur = self.db.execute(
+            f"UPDATE posts SET image_path=?, {self._BACK_TO_DRAFT} WHERE id=? AND status IN ('draft','scheduled','failed')",
+            (path, post_id),
+        )
+        if cur.rowcount:
+            self._ev(post_id, "edited")
         self.db.commit()
 
     def schedule(self, post_id: int, when: datetime) -> None:
@@ -214,13 +230,16 @@ class Store:
         self.db.commit()
         return cur.rowcount == 1
 
-    def mark_published(self, post_id: int, message_id: int) -> None:
-        self.db.execute(
-            "UPDATE posts SET status='published', published_at=?, message_id=?, error=NULL WHERE id=?",
+    def mark_published(self, post_id: int, message_id: int) -> bool:
+        """Only a post claimed with begin_send can become 'published'."""
+        cur = self.db.execute(
+            "UPDATE posts SET status='published', published_at=?, message_id=?, error=NULL WHERE id=? AND status='sending'",
             (_now(), message_id, post_id),
         )
-        self._ev(post_id, "published")
+        if cur.rowcount:
+            self._ev(post_id, "published")
         self.db.commit()
+        return cur.rowcount == 1
 
     def mark_deleted(self, post_id: int) -> None:
         """A published post that was removed from the channel by the owner."""
