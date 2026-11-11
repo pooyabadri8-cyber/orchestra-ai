@@ -17,7 +17,7 @@ THOUSANDS, DECIMAL, MINUS = "٬", "٫", "−"
 SCALE_VALUE = {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3, "": 1.0}
 SCALE_WORD = {"T": "همت", "B": "میلیارد تومان", "M": "میلیون تومان", "K": "هزار تومان", "": "تومان"}
 
-FORMATS = ("money", "abs_money", "int", "signed", "pct", "abs_pct", "signed_pct", "name")
+FORMATS = ("money", "abs_money", "int", "num", "signed", "pct", "abs_pct", "signed_pct", "name", "rial", "ratio")
 
 TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*(?:\|\s*([a-z_]+)\s*)?\}\}")
 
@@ -58,6 +58,14 @@ def fa_number(value: float, decimals: int) -> str:
     return text.replace(",", "\x00").replace(".", DECIMAL).replace("\x00", THOUSANDS).translate(FA)
 
 
+def _auto_scale(toman: float) -> tuple[str, int]:
+    a = abs(toman)
+    for scale in ("T", "B", "M", "K"):
+        if a >= SCALE_VALUE[scale]:
+            return scale, 1
+    return "", 0
+
+
 def format_point(p: BoundPoint, fmt: str) -> str:
     if fmt not in FORMATS:
         raise BindingError(f"قالب ناشناخته «{fmt}»")
@@ -68,12 +76,22 @@ def format_point(p: BoundPoint, fmt: str) -> str:
             raise BindingError(f"{p.key} نام ندارد")
         return p.subject
     if fmt in ("money", "abs_money"):
-        if p.unit != "IRT":
+        if p.unit not in ("IRT", "IRR"):
             raise BindingError(f"{p.key} مبلغ نیست")
-        shown = p.value / SCALE_VALUE[p.scale]
+        toman = p.value / 10 if p.unit == "IRR" else p.value
+        scale, decimals = (p.scale, p.decimals) if p.scale else _auto_scale(toman)
+        shown = toman / SCALE_VALUE[scale]
         if fmt == "money" and p.value < 0:
-            return f"{MINUS}{fa_number(shown, p.decimals)} {SCALE_WORD[p.scale]}"
-        return f"{fa_number(shown, p.decimals)} {SCALE_WORD[p.scale]}"
+            return f"{MINUS}{fa_number(shown, decimals)} {SCALE_WORD[scale]}"
+        return f"{fa_number(shown, decimals)} {SCALE_WORD[scale]}"
+    if fmt == "rial":
+        if p.unit != "IRR":
+            raise BindingError(f"{p.key} مبلغ ریالی نیست")
+        return f"{MINUS if p.value < 0 else ''}{fa_number(p.value, p.decimals)} ریال"
+    if fmt in ("num", "ratio"):
+        if p.unit in ("IRT", "IRR", "date"):
+            raise BindingError(f"{p.key} عدد سادهٔ بدون واحد نیست")
+        return f"{MINUS if p.value < 0 else ''}{fa_number(p.value, p.decimals)}"
     if fmt == "int":
         if p.value < 0:
             return f"{MINUS}{fa_number(p.value, 0)}"
