@@ -38,6 +38,7 @@ class Runtime:
     brand_root: Path = Path("orgs")
     notifier: ApprovalNotifier = field(default_factory=NullNotifier)
     clock: Callable[[], datetime] = utcnow
+    registry_root: Path | None = None
 
 
 _current: Runtime | None = None

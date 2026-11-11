@@ -60,3 +60,25 @@ def test_init_publish_pause(tmp_path, monkeypatch, capsys):
         assert jobs["bale_test"].status == "failed" and "BALE_TOKEN_NOT_SET" in jobs["bale_test"].error
     cli.main(["jobs"])
     assert "confirmed" in capsys.readouterr().out
+
+
+def test_imports_from_the_command_line(tmp_path, monkeypatch, capsys):
+    from orchestra.db import DataSnapshot
+    from orchestra.workflows.request import price_source, statements_source
+    from test_specialists import STATEMENTS, synthetic_csv
+    db = f"sqlite:///{tmp_path / 'app.db'}"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "orgs" / "pouyan").mkdir(parents=True)
+    (tmp_path / "orgs" / "pouyan" / "destinations.yaml").write_text("destinations: []\n", encoding="utf-8")
+    monkeypatch.setenv("ORCHESTRA_DATABASE_URL", db)
+    monkeypatch.setenv("ORCHESTRA_ASSET_DIR", str(tmp_path / "assets"))
+    monkeypatch.setenv("ORCHESTRA_ORGS_DIR", str(tmp_path / "orgs"))
+    cli.main(["init"])
+    (tmp_path / "p.csv").write_bytes(synthetic_csv(40))
+    (tmp_path / "s.yaml").write_bytes(STATEMENTS)
+    assert cli.main(["import-prices", "p.csv", "--subject", "شاخص کل"]) == 0
+    assert cli.main(["import-statements", "s.yaml"]) == 0
+    assert "40 روز" in capsys.readouterr().out
+    with make_sessionmaker(make_engine(db))() as s:
+        sources = {x.source_id for x in s.query(DataSnapshot).all()}
+    assert sources == {price_source("شاخص کل"), statements_source("نمونه")}

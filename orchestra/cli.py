@@ -1,7 +1,11 @@
 """Command line for running ORCHESTRA on one computer, until the approval bot exists.
 
     python -m orchestra.cli init                       create tables, load destinations from orgs/<org>/destinations.yaml
-    python -m orchestra.cli run --org pouyan           run market_close_v1 for today until it waits for approval
+    python -m orchestra.cli ask "گزارش پایان بازار امروز با تحلیل تکنیکال شاخص کل"
+                                                       the Manager plans the request and the team carries it to approval
+    python -m orchestra.cli import-prices --subject "شاخص کل" prices.csv     price history for technical analysis
+    python -m orchestra.cli import-statements statements.yaml               financial statements for fundamental analysis
+    python -m orchestra.cli run --org pouyan           run market_close_v1 (Telegram/Bale text only) for today
     python -m orchestra.cli show RUN_ID                the post exactly as it would be sent, with its sources and checks
     python -m orchestra.cli approve RUN_ID [--only tg_test]
     python -m orchestra.cli reject RUN_ID --reason "..."
@@ -127,6 +131,57 @@ def cmd_run(cfg: Settings, a) -> None:
     dbos.destroy()
 
 
+def _wait_and_report(rtm, dbos, run_id: str, handle) -> None:
+    import time
+    while True:
+        with rtm.sessions() as s:
+            run = s.get(Run, run_id)
+            status = run.status if run else "starting"
+        if status not in ("running", "starting", "planning"):
+            break
+        time.sleep(1)
+    print(f"اجرا: {run_id} → {status}")
+    if status == "awaiting_approval":
+        print(f"محتوای هر کانال و اسلایدها را ببینید:  python -m orchestra.cli show {run_id}")
+        leave_runs_waiting()
+    result = handle.get_result()
+    if result.get("message"):
+        print(result["message"])
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+    dbos.destroy()
+
+
+def cmd_ask(cfg: Settings, a) -> None:
+    from dbos import SetWorkflowID
+
+    from .workflows import request as wf
+    rtm = _runtime(cfg)
+    set_runtime(rtm)
+    dbos = _launch_dbos(cfg)
+    day = datetime.now(TEHRAN).date() if not a.day else datetime.fromisoformat(a.day).date()
+    run_id = wf.run_id_for(a.org, a.request, day)
+    with SetWorkflowID(run_id):
+        handle = dbos.start_workflow(wf.handle_request, a.org, a.request, day.isoformat(), _destinations(cfg, a.org),
+                                     approval_timeout_s=a.timeout_hours * 3600)
+    _wait_and_report(rtm, dbos, run_id, handle)
+
+
+def cmd_import(cfg: Settings, a, kind: str) -> None:
+    from .data.imports import parse_price_csv, parse_statements_yaml, record_import
+    from .db import utcnow
+    from .workflows.request import price_source, statements_source
+    raw = open(a.file, "rb").read()
+    if kind == "prices":
+        bars = parse_price_csv(raw)  # refuse a broken file before storing it
+        source, parser, note = price_source(a.subject), "price_csv@1", f"{len(bars)} روز، از {bars[0].day} تا {bars[-1].day}"
+    else:
+        statements = parse_statements_yaml(raw)
+        source, parser, note = statements_source(statements[0].symbol), "statements_yaml@1", f"{len(statements)} دوره برای {statements[0].symbol}"
+    with _sessions(cfg).begin() as s:
+        sid = record_import(s, AssetStore(cfg.asset_dir), source_id=source, raw=raw, parser=parser, now=utcnow(), label=os.path.basename(a.file))
+    print(f"وارد شد: {note}  ({sid})")
+
+
 def cmd_show(cfg: Settings, a) -> None:
     with _sessions(cfg)() as s:
         run = s.get(Run, a.run_id)
@@ -143,6 +198,14 @@ def cmd_show(cfg: Settings, a) -> None:
     for d in content["destinations"]:
         print(f"\n===== {d['destination_id']} ({d['platform']}) =====")
         print(d["delivery_plan"][0]["body"])
+    if content.get("assets"):
+        out = os.path.join("previews", a.run_id.replace(":", "_"))
+        os.makedirs(out, exist_ok=True)
+        store = AssetStore(cfg.asset_dir)
+        for ref in content["assets"]:
+            with open(os.path.join(out, f"{ref['order']:02d}.jpg"), "wb") as f:
+                f.write(store.get(ref["sha256"]))
+        print(f"\n🖼  {len(content['assets'])} اسلاید اینستاگرام در پوشهٔ {out}")
     print("\n===== منبع هر عدد =====")
     for p in content["sources"]["data_points"]:
         print(f"  {p['metric']}{' / ' + p['subject'] if p.get('subject') else ''}: «{p['source_text']}» از {p['source_id']} (پاسخ خام {p['raw_sha256'][:12]})")
@@ -150,6 +213,7 @@ def cmd_show(cfg: Settings, a) -> None:
 
 def _decide(cfg: Settings, a, decision: str) -> None:
     from .workflows import market_close as wf
+    from .workflows import request as _request  # noqa: F401  (registers handle_request so a waiting run can resume)
     with _sessions(cfg)() as s:
         run = s.get(Run, a.run_id)
         if run is None or run.status != "awaiting_approval":
@@ -198,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init"); p.add_argument("--org", default="pouyan")
     p = sub.add_parser("run"); p.add_argument("--org", default="pouyan"); p.add_argument("--day"); p.add_argument("--timeout-hours", type=int, default=3)
+    p = sub.add_parser("ask"); p.add_argument("request"); p.add_argument("--org", default="pouyan"); p.add_argument("--day")
+    p.add_argument("--timeout-hours", type=int, default=3)
+    p = sub.add_parser("import-prices"); p.add_argument("file"); p.add_argument("--subject", required=True)
+    p = sub.add_parser("import-statements"); p.add_argument("file")
     p = sub.add_parser("show"); p.add_argument("run_id")
     p = sub.add_parser("approve"); p.add_argument("run_id"); p.add_argument("--only", nargs="*")
     p = sub.add_parser("reject"); p.add_argument("run_id"); p.add_argument("--reason", default=None); p.set_defaults(only=None)
@@ -213,6 +281,12 @@ def main(argv: list[str] | None = None) -> int:
         cmd_init(cfg, a)
     elif a.cmd == "run":
         cmd_run(cfg, a)
+    elif a.cmd == "ask":
+        cmd_ask(cfg, a)
+    elif a.cmd == "import-prices":
+        cmd_import(cfg, a, "prices")
+    elif a.cmd == "import-statements":
+        cmd_import(cfg, a, "statements")
     elif a.cmd == "show":
         cmd_show(cfg, a)
     elif a.cmd == "approve":
