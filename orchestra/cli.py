@@ -80,6 +80,19 @@ def leave_runs_waiting(code: int = 0) -> None:
     os._exit(code)
 
 
+def _ensure_ready(cfg: Settings, org: str) -> None:
+    """First run on a fresh database: create the tables and load destinations, so `init` is never a forgotten step."""
+    from sqlalchemy import inspect
+    engine = make_engine(cfg.database_url)
+    if not inspect(engine).has_table("destinations") or not _has_destinations(cfg, org):
+        cmd_init(cfg, argparse.Namespace(org=org))
+
+
+def _has_destinations(cfg: Settings, org: str) -> bool:
+    with _sessions(cfg)() as s:
+        return s.execute(select(Destination.id).where(Destination.org_id == org).limit(1)).first() is not None
+
+
 def _destinations(cfg: Settings, org: str) -> list[list[str]]:
     with _sessions(cfg)() as s:
         rows = s.execute(select(Destination).where(Destination.org_id == org, Destination.enabled.is_(True))).scalars().all()
@@ -107,6 +120,7 @@ def cmd_run(cfg: Settings, a) -> None:
     from dbos import SetWorkflowID
 
     from .workflows import market_close as wf
+    _ensure_ready(cfg, a.org)
     rtm = _runtime(cfg)
     set_runtime(rtm)
     dbos = _launch_dbos(cfg)
@@ -155,6 +169,7 @@ def cmd_ask(cfg: Settings, a) -> None:
     from dbos import SetWorkflowID
 
     from .workflows import request as wf
+    _ensure_ready(cfg, a.org)
     rtm = _runtime(cfg)
     set_runtime(rtm)
     dbos = _launch_dbos(cfg)

@@ -177,7 +177,7 @@ def s_compose(snapshot_id: str, parts: list[dict], excluded: list[str], day_iso:
 
 
 @DBOS.step(retries_allowed=True, max_attempts=2, interval_seconds=60)
-async def s_write(org_id: str, run_id: str, report: dict, day_iso: str, platforms: list[str], focus: str,
+async def q_write(org_id: str, run_id: str, report: dict, day_iso: str, platforms: list[str], focus: str,
                   feedback: list[str] | None, attempt: int) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
@@ -255,7 +255,7 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
 
 
 @DBOS.step()
-def s_package(org_id: str, run_id: str, verified: dict, assets: list[dict], chart_points: list[str], destinations: list[list[str]],
+def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], chart_points: list[str], destinations: list[list[str]],
               window_minutes: int, risk: str, versions: dict) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
@@ -338,7 +338,7 @@ async def handle_request(org_id: str, request: str, day_iso: str, destinations: 
     findings: list[dict] = []
     for attempt in range(1, MAX_WRITES + 1):
         try:
-            written = await s_write(org_id, run_id, report, day, platforms, str(params.get("focus") or ""), feedback, attempt)
+            written = await q_write(org_id, run_id, report, day, platforms, str(params.get("focus") or ""), feedback, attempt)
         except Exception as e:
             return s_finish(run_id, "failed", detail={"error": f"write: {e}"})
         if "error" in written:
@@ -371,7 +371,7 @@ async def handle_request(org_id: str, request: str, day_iso: str, destinations: 
     versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,
                 "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
                 "technical": TECH_V, "fundamental": FUND_V}
-    pkg = s_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions)
+    pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions)
     s_finish(run_id, "awaiting_approval", findings=findings, detail={"package_id": pkg["package_id"]})
     await s_request_approval(org_id, run_id, pkg["package_id"], pkg["package_hash"])
 
