@@ -20,6 +20,8 @@ from sqlalchemy.orm import sessionmaker
 from .db import LLMCall
 
 
+CONNECT_TIMEOUT = 15.0
+UNREACHABLE_HINT = "به سرویس مدل وصل نشد؛ اگر آن سرویس از ایران بسته است، VPN را روشن کنید"
 BAD_URL_MESSAGE = "آدرس سرویس مدل («{url}») درست نیست؛ باید با https:// شروع شود (ORCHESTRA_LLM_BASE_URL در .env)"
 
 
@@ -65,11 +67,13 @@ class AnthropicProvider:
     async def complete(self, model: str, system: str, user: str, max_tokens: int) -> Completion:
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]}
-        async with httpx.AsyncClient(timeout=self.timeout) as http:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT)) as http:
             try:
                 r = await http.post(f"{self.base_url}/v1/messages", json=body, headers=headers)
             except (httpx.UnsupportedProtocol, httpx.InvalidURL) as e:
                 raise LLMError(BAD_URL_MESSAGE.format(url=self.base_url), retryable=False) from e
+            except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+                raise LLMError(f"network: {type(e).__name__} — {UNREACHABLE_HINT}") from e
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:
@@ -90,12 +94,14 @@ class OpenAICompatibleProvider:
     async def complete(self, model: str, system: str, user: str, max_tokens: int) -> Completion:
         body = {"model": model, "max_tokens": max_tokens,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-        async with httpx.AsyncClient(timeout=self.timeout) as http:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT)) as http:
             try:
                 r = await http.post(f"{self.base_url.rstrip('/')}/chat/completions", json=body,
                                     headers={"Authorization": f"Bearer {self.api_key}"})
             except (httpx.UnsupportedProtocol, httpx.InvalidURL) as e:
                 raise LLMError(BAD_URL_MESSAGE.format(url=self.base_url), retryable=False) from e
+            except (httpx.ConnectTimeout, httpx.ConnectError) as e:
+                raise LLMError(f"network: {type(e).__name__} — {UNREACHABLE_HINT}") from e
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:

@@ -86,3 +86,19 @@ def test_failed_run_does_not_block_a_corrected_rerun(tmp_path):
     with sessions.begin() as s:
         s.add(Run(id="a:r1", org_id="o", template="t", status="awaiting_approval"))
     assert fresh_run_id(sessions, "a") == "a:r1"  # a run waiting for approval is reused, never duplicated
+
+
+def test_unreachable_model_service_fails_fast_with_a_clear_message(tmp_path, monkeypatch):
+    import httpx
+    import pytest
+    import respx
+    from orchestra import cli
+    cfg = _env(monkeypatch, tmp_path, LLM_PROVIDER="openai_compatible", LLM_API_KEY="k", LLM_MODEL="m",
+               LLM_BASE_URL="https://llm.example/v1/")
+    with respx.mock() as router:
+        router.get("https://llm.example/v1/").mock(side_effect=httpx.ConnectTimeout("t"))
+        with pytest.raises(SystemExit, match="VPN"):
+            cli._check_llm_reachable(cfg)
+    with respx.mock() as router:  # any HTTP answer, even 404, means the service is reachable
+        router.get("https://llm.example/v1/").mock(return_value=httpx.Response(404))
+        cli._check_llm_reachable(cfg)

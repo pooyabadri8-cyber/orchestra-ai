@@ -96,6 +96,22 @@ def leave_runs_waiting(code: int = 0) -> None:
     os._exit(code)
 
 
+def _check_llm_reachable(cfg: Settings) -> None:
+    """Fail in seconds, with a clear reason, instead of hanging when the model service cannot be reached."""
+    import httpx
+
+    from .llm import UNREACHABLE_HINT
+    url = cfg.llm_base_url or ("https://api.anthropic.com" if cfg.llm_provider == "anthropic" else "")
+    if not url:
+        return
+    try:
+        httpx.get(url, timeout=httpx.Timeout(10.0, connect=10.0), follow_redirects=True)  # any HTTP answer means reachable
+    except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as e:
+        sys.exit(f"{UNREACHABLE_HINT}.\n({url} — {type(e).__name__})")
+    except httpx.HTTPError:
+        pass
+
+
 def _ensure_ready(cfg: Settings, org: str) -> None:
     """First run on a fresh database: create the tables and load destinations, so `init` is never a forgotten step."""
     from sqlalchemy import inspect
@@ -163,12 +179,19 @@ def cmd_run(cfg: Settings, a) -> None:
 
 def _wait_and_report(rtm, dbos, run_id: str, handle) -> None:
     import time
+
+    from .db import LLMCall
+    started, last_note = time.monotonic(), 0.0
     while True:
         with rtm.sessions() as s:
             run = s.get(Run, run_id)
             status = run.status if run else "starting"
+            last = s.execute(select(LLMCall.step_key).where(LLMCall.run_id == run_id).order_by(LLMCall.id.desc()).limit(1)).scalar_one_or_none()
         if status not in ("running", "starting", "planning"):
             break
+        if time.monotonic() - last_note >= 15:
+            last_note = time.monotonic()
+            print(f"… {int(time.monotonic() - started)} ثانیه؛ وضعیت: {status}؛ آخرین مرحلهٔ مدل: {last or '-'}", flush=True)
         time.sleep(1)
     print(f"اجرا: {run_id} → {status}")
     if status == "awaiting_approval":
@@ -187,6 +210,7 @@ def cmd_ask(cfg: Settings, a) -> None:
     from .workflows import request as wf
     _ensure_ready(cfg, a.org)
     rtm = _runtime(cfg)
+    _check_llm_reachable(cfg)
     set_runtime(rtm)
     dbos = _launch_dbos(cfg)
     day = datetime.now(TEHRAN).date() if not a.day else datetime.fromisoformat(a.day).date()
