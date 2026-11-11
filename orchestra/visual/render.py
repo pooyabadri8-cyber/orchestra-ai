@@ -162,6 +162,23 @@ def jpeg_size(data: bytes) -> tuple[int, int]:
     raise RenderError("JPEG has no frame header")
 
 
+async def _launch(pw):
+    """Prefer a browser already on the computer (no download). ORCHESTRA_BROWSER_PATH wins if set; then Edge and
+    Chrome, which ship with or are installed on Windows; the Playwright Chromium is the last resort."""
+    import os
+    attempts = []
+    if os.environ.get("ORCHESTRA_BROWSER_PATH"):
+        attempts.append({"executable_path": os.environ["ORCHESTRA_BROWSER_PATH"]})
+    attempts += [{"channel": "msedge"}, {"channel": "chrome"}, {}]
+    errors = []
+    for kw in attempts:
+        try:
+            return await pw.chromium.launch(**kw)
+        except Exception as e:  # not installed here; try the next one
+            errors.append(f"{kw}: {str(e).splitlines()[0][:120]}")
+    raise RenderError("هیچ مرورگری پیدا نشد. Microsoft Edge یا Chrome را نصب کنید یا ORCHESTRA_BROWSER_PATH را تنظیم کنید. " + " | ".join(errors))
+
+
 async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> list[SlideImage]:
     """Render the verified slides plus the brand's closing slide. `browser`: an open Playwright browser (optional)."""
     if not slides:
@@ -173,7 +190,7 @@ async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> l
     if own:
         from playwright.async_api import async_playwright
         pw = await async_playwright().start()
-        browser = await pw.chromium.launch()
+        browser = await _launch(pw)
     try:
         page = await browser.new_page(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1)
         out = []

@@ -27,9 +27,15 @@ Step "نصب کتابخانه‌ها (چند دقیقه طول می‌کشد)"
 & $venvPy -m pip install -e ".[dev]" --quiet
 if ($LASTEXITCODE -ne 0) { Write-Host "نصب کتابخانه‌ها خطا داد." -ForegroundColor Red; exit 1 }
 
-Step "نصب مرورگر برای ساخت اسلاید"
-& $venvPy -m playwright install chromium
-if ($LASTEXITCODE -ne 0) { Write-Host "نصب Chromium خطا داد؛ اگر VPN خاموش است روشنش کنید و دوباره اجرا کنید." -ForegroundColor Red; exit 1 }
+Step "بررسی مرورگر برای ساخت اسلاید"
+$edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($edge) {
+    Write-Host "مرورگر پیدا شد: $edge (نیازی به دانلود نیست)"
+} else {
+    Write-Host "Edge یا Chrome پیدا نشد؛ تلاش برای نصب Chromium (نیاز به VPN روشن)"
+    & $venvPy -m playwright install chromium
+    if ($LASTEXITCODE -ne 0) { Write-Host "Chromium نصب نشد. Microsoft Edge یا Chrome نصب کنید و دوباره اجرا کنید." -ForegroundColor Yellow }
+}
 
 if (-not (Test-Path ".env")) {
     Step "ساخت فایل .env (با SQLite)"
