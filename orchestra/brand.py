@@ -20,6 +20,7 @@ class PostTemplate(BaseModel):
     brand_hashtag: str
     default_topic_hashtag: str
     default_cta: str = ""
+    instagram_cta: str = ""  # Instagram is a page, not a channel; empty = default_cta
     footer_text: str = ""
     footer_links: tuple[FooterLink, ...] = ()
 

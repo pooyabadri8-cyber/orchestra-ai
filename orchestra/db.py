@@ -230,6 +230,54 @@ class Run(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
+class ControlState(Base):
+    """Small durable values of the control bot (e.g. the next update offset), so a restart never replays a message."""
+
+    __tablename__ = "control_state"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
+class ControlPrompt(Base):
+    """One approval question shown to the owner in the control chat. A decision is accepted only while the prompt is
+    `pending` and its package is still the run's package, so a button pressed twice or on old content does nothing."""
+
+    __tablename__ = "control_prompts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    package_id: Mapped[str] = mapped_column(String(64))
+    package_hash: Mapped[str] = mapped_column(String(64))
+    # sending -> pending -> deciding -> approved | rejected | closed;  void = never fully shown. Rows are never
+    # deleted, so a number that was once on a button can never come to mean another run.
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    messages: Mapped[list] = mapped_column(JSON, default=list)  # [[chat_id, message_id], ...] of the question itself
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class ControlRequest(Base):
+    """A request that arrived through the control chat (or the daily schedule), kept until its outcome is reported."""
+
+    __tablename__ = "control_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    origin: Mapped[str] = mapped_column(String(128), unique=True)  # "update:<id>" or "schedule:<name>:<day>"
+    chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # None: tell every owner
+    run_id: Mapped[str] = mapped_column(String(128))
+    text: Mapped[str] = mapped_column(Text)
+    reported: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class ControlJobReport(Base):
+    """The last state of a publish job that the owner was told about."""
+
+    __tablename__ = "control_job_reports"
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16))
+
+
 def make_engine(url: str) -> Engine:
     engine = create_engine(url, future=True, pool_pre_ping=True)
     if engine.dialect.name == "sqlite":

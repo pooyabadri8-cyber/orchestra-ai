@@ -51,8 +51,45 @@ class FakeServices(BaseHTTPRequestHandler):
         else:
             self._send(404, b"{}", "application/json")
 
+    # ---- a Bot API (Telegram/Bale shape): /bot<token>/<method>. Everything sent is recorded; updates are queued.
+    sent: list[dict] = []
+    updates: list[dict] = []
+    lock = threading.Lock()
+
+    def _bot(self, raw: bytes) -> None:
+        token, method = self.path[len("/bot"):].split("/", 1)
+        ctype = self.headers.get("Content-Type", "")
+        fields: dict = {}
+        if ctype.startswith("multipart/"):
+            from email import message_from_bytes
+            msg = message_from_bytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + raw)
+            for part in msg.get_payload():
+                name = part.get_param("name", header="content-disposition")
+                data = part.get_payload(decode=True)
+                fields[name] = len(data) if part.get_filename() else data.decode("utf-8")
+        else:
+            from urllib.parse import parse_qs
+            fields = {k: v[0] for k, v in parse_qs(raw.decode("utf-8")).items()}
+        with FakeServices.lock:
+            if method == "getUpdates":
+                offset = int(fields.get("offset", 0))
+                result = [u for u in FakeServices.updates if u["update_id"] >= offset]
+            else:
+                FakeServices.sent.append({"token": token, "method": method, **fields})
+                n = len(FakeServices.sent)
+                result = [{"message_id": n}] if method == "sendMediaGroup" else {"message_id": n}
+        if method == "getUpdates" and not result:
+            import time
+            time.sleep(0.3)
+        self._send(200, json.dumps({"ok": True, "result": result}).encode(), "application/json")
+
     def do_POST(self):
-        req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        raw = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.path.startswith("/bot"):
+            return self._bot(raw)
+        if not self.path.endswith("/chat/completions"):
+            return self._send(404, b'{"ok": false, "description": "Not Found"}', "application/json")
+        req = json.loads(raw)
         role = {800: "manager", 3500: "writer", 1500: "reviewer"}[req["max_tokens"]]
         FakeServices.calls.append(role)
         answer = {"manager": FakeServices.plan, "writer": FakeServices.draft, "reviewer": CLEAN}[role]
@@ -68,6 +105,7 @@ def project(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
     FakeServices.plan, FakeServices.draft, FakeServices.calls = PLAN, DRAFT, []
+    FakeServices.sent, FakeServices.updates = [], []
     work = tmp_path / "orchestra-ai-main"
     try:
         files = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
@@ -87,7 +125,9 @@ def project(tmp_path):
         "ORCHESTRA_LLM_API_KEY=test-key",
         "ORCHESTRA_LLM_MODEL=model-a,model-b",
         f"ORCHESTRA_BOURSE_TRADER_URL=http://127.0.0.1:{port}/page",
-        "TELEGRAM_BOT_TOKEN=", "BALE_BOT_TOKEN=", "",
+        f"ORCHESTRA_TELEGRAM_API_BASE=http://127.0.0.1:{port}/bot",
+        f"ORCHESTRA_BALE_API_BASE=http://127.0.0.1:{port}/bot",
+        "TELEGRAM_TEST_BOT_TOKEN=", "BALE_TEST_BOT_TOKEN=", "INSTAGRAM_TEST_TOKEN=", "",
     ]), encoding="utf-8")
     (work / "data").mkdir()
     yield work

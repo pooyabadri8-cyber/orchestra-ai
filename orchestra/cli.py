@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -318,7 +319,8 @@ def _publisher(cfg: Settings) -> Publisher:
         if dest.platform == "instagram":
             host = DirectoryHost(cfg.public_asset_dir, cfg.public_asset_url) if cfg.public_asset_dir and cfg.public_asset_url else NoHost()
             return InstagramAdapter(ig_user_id=dest.chat_id, token=token, host=host, timeout=cfg.send_timeout_seconds)
-        return BotApiAdapter(platform=dest.platform, token=token, chat_id=dest.chat_id, timeout=cfg.send_timeout_seconds)
+        base = {"telegram": cfg.telegram_api_base, "bale": cfg.bale_api_base}.get(dest.platform) or None
+        return BotApiAdapter(platform=dest.platform, token=token, chat_id=dest.chat_id, timeout=cfg.send_timeout_seconds, base_url=base)
     return Publisher(_sessions(cfg), AssetStore(cfg.asset_dir), adapter_factory=adapter,
                      max_attempts=cfg.max_publish_attempts, retry_delays=cfg.retry_delays_seconds)
 
@@ -330,6 +332,110 @@ def cmd_publish(cfg: Settings, a) -> None:
         print(f"⚠️ این کارها وسط ارسال قطع شده بودند و «نامعلوم» شدند: {recovered}")
     results = asyncio.run(pub.run_due())
     print(json.dumps(results, ensure_ascii=False) if results else "کاری برای ارسال نیست.")
+
+
+class DbosEngine:
+    """The control bot's way to the workflow engine and the publisher (see orchestra.control.service.Engine)."""
+
+    def __init__(self, cfg: Settings, rtm: Runtime, dbos, publisher: Publisher):
+        self.cfg, self.rtm, self.dbos, self.publisher = cfg, rtm, dbos, publisher
+
+    def start_request(self, org_id: str, text: str, *, new: bool) -> str:
+        from dbos import SetWorkflowID
+
+        from .workflows import request as wf
+        day = datetime.now(TEHRAN).date()
+        run_id = wf.fresh_run_id(self.rtm.sessions, wf.run_id_for(org_id, text, day), new=new)
+        with SetWorkflowID(run_id):
+            self.dbos.start_workflow(wf.handle_request, org_id, text, day.isoformat(), _destinations(self.cfg, org_id))
+        return run_id
+
+    def can_resume(self, run_id: str) -> bool:
+        st = self.dbos.get_workflow_status(run_id)
+        return st is not None and st.app_version == APP_VERSION and st.status in ("PENDING", "ENQUEUED")
+
+    def is_alive(self, run_id: str) -> bool:
+        st = self.dbos.get_workflow_status(run_id)
+        return st is None or st.status in ("PENDING", "ENQUEUED")  # None: not recorded yet, it has just been started
+
+    def decide(self, run_id: str, package_hash: str, decision: str, actor: str, reason: str | None) -> dict:
+        import time
+
+        from .workflows import market_close as wf
+        wf.submit_decision(run_id, package_hash, decision, actor, reason=reason)
+        deadline = time.monotonic() + DECIDE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            st = self.dbos.get_workflow_status(run_id)
+            if st is not None and st.status not in ("PENDING", "ENQUEUED"):
+                return self.dbos.retrieve_workflow(run_id).get_result()
+            time.sleep(0.3)
+        raise TimeoutError("the run did not finish after the decision")
+
+    def publish_due(self) -> dict[int, str]:
+        return asyncio.run(self.publisher.run_due())
+
+    def set_paused(self, org_id: str, paused: bool, actor: str) -> None:
+        self.publisher.set_paused(org_id, paused, actor)
+
+    def confirm_sent(self, job_id: int, actor: str) -> bool:
+        return self.publisher.confirm_sent(job_id, actor)
+
+    def requeue(self, job_id: int, actor: str) -> bool:
+        return self.publisher.requeue(job_id, actor)
+
+
+def cmd_serve(cfg: Settings, a) -> None:
+    """The always-on mode: control bot + daily schedule + publisher, in one process."""
+    import logging
+
+    from .control.botapi import BotApi
+    from .control.service import ControlService, load_schedule
+    from .workflows import market_close as _mc  # noqa: F401  (both workflows registered: waiting runs resume here)
+    from .workflows import request as _rq  # noqa: F401
+    if not cfg.control_bot_token:
+        sys.exit("توکن ربات کنترل تنظیم نشده است. در .env بنویسید: ORCHESTRA_CONTROL_BOT_TOKEN=...  (راهنما در README، بخش «ربات کنترل»)")
+    if cfg.control_platform not in ("telegram", "bale"):
+        sys.exit("ORCHESTRA_CONTROL_PLATFORM باید telegram یا bale باشد.")
+    owners = tuple(x.strip().translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")) for x in cfg.control_chat_ids.split(",") if x.strip())
+    if any(not re.fullmatch(r"-?\d+", o) for o in owners):
+        sys.exit("ORCHESTRA_CONTROL_CHAT_IDS باید فقط عدد باشد (چند شناسه با کاما).")
+    try:
+        schedule = load_schedule(cfg.orgs_dir / a.org / "schedule.yaml")
+    except (ValueError, yaml.YAMLError) as e:
+        sys.exit(str(e))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    for noisy in ("httpx", "httpcore"):  # their INFO lines print full request addresses, which contain bot tokens
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    _ensure_ready(cfg, a.org)
+    rtm = _runtime(cfg)
+    set_runtime(rtm)
+    dbos = _launch_dbos(cfg)
+    pub = _publisher(cfg)
+    recovered = pub.recover_sending()
+    base = {"telegram": cfg.telegram_api_base, "bale": cfg.bale_api_base}[cfg.control_platform] or None
+    api = BotApi(cfg.control_platform, cfg.control_bot_token, base_url=base)
+    from .control.botapi import BotApiError
+    try:
+        api.call("getMe")
+    except BotApiError as e:
+        if not e.retryable:
+            sys.exit(f"ربات کنترل توکن را نپذیرفت ({e}). ORCHESTRA_CONTROL_BOT_TOKEN و ORCHESTRA_CONTROL_PLATFORM را در .env بررسی کنید.")
+        hint = " تلگرام از ایران بدون VPN در دسترس نیست؛ یا VPN را روشن کنید یا ربات را در بله بسازید." if cfg.control_platform == "telegram" else ""
+        print(f"⚠️ فعلاً به {cfg.control_platform} وصل نشدم ({e}).{hint} به تلاش ادامه می‌دهم…", flush=True)
+    svc = ControlService(org_id=a.org, api=api, engine=DbosEngine(cfg, rtm, dbos, pub), sessions=rtm.sessions,
+                         assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds)
+    print(f"ربات کنترل روشن است ({cfg.control_platform}). برای خاموش کردن، همین پنجره را ببندید.", flush=True)
+    if not owners:
+        print("هنوز هیچ شناسه‌ای مجاز نیست: به ربات یک پیام بدهید تا شناسه‌تان را بگوید، بعد آن را در ORCHESTRA_CONTROL_CHAT_IDS بنویسید.", flush=True)
+    for e in schedule:
+        print(f"زمان‌بندی: {e.name} ساعت {e.at[0]:02d}:{e.at[1]:02d} — {e.request[:60]}", flush=True)
+    try:
+        if recovered and owners:
+            svc._say(None, f"⚠️ این ارسال‌ها وسط کار قطع شده بودند و «نامعلوم» شدند: {recovered}\n/jobs را ببینید.")
+        svc.run_forever()
+    except KeyboardInterrupt:
+        pass
+    leave_runs_waiting()
 
 
 def cmd_jobs(cfg: Settings, a) -> None:
@@ -354,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("approve"); p.add_argument("run_id"); p.add_argument("--only", nargs="*")
     p = sub.add_parser("reject"); p.add_argument("run_id"); p.add_argument("--reason", default=None); p.set_defaults(only=None)
     sub.add_parser("publish")
+    p = sub.add_parser("serve"); p.add_argument("--org", default="pouyan")
     sub.add_parser("jobs")
     p = sub.add_parser("confirm-sent"); p.add_argument("job_id", type=int)
     p = sub.add_parser("retry"); p.add_argument("job_id", type=int)
@@ -381,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         _decide(cfg, a, "rejected")
     elif a.cmd == "publish":
         cmd_publish(cfg, a)
+    elif a.cmd == "serve":
+        cmd_serve(cfg, a)
     elif a.cmd == "jobs":
         cmd_jobs(cfg, a)
     elif a.cmd == "confirm-sent":

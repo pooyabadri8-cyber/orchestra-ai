@@ -318,8 +318,8 @@ def instagram_caption_text(brand: Brand, caption: Caption) -> str:
     """The caption as published: model paragraphs, then the brand's fixed call to action and hashtags."""
     tpl = brand.template
     lines = ["\n\n".join(caption.paragraphs)]
-    if tpl.default_cta:
-        lines += ["", tpl.default_cta]
+    if tpl.instagram_cta or tpl.default_cta:
+        lines += ["", tpl.instagram_cta or tpl.default_cta]
     if tpl.footer_text:
         lines += ["", tpl.footer_text]
     lines += ["", " ".join([tpl.brand_hashtag, *caption.hashtags])]

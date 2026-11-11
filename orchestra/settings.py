@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     public_asset_dir: Path | None = None
     public_asset_url: str = ""
 
+    # other Bot API addresses (a local Bot API server, a relay, or a test server); empty = the official ones
+    telegram_api_base: str = ""
+    bale_api_base: str = ""
+
+    # control bot: the owner gives requests and approves from their phone
+    control_platform: str = "telegram"  # telegram | bale
+    control_bot_token: str = ""
+    control_chat_ids: str = ""  # numeric ids of the people allowed to command and approve, comma-separated
+    control_poll_seconds: int = 5
+
     # model tiers: empty means "use llm_model"
     manager_model: str = ""
     reviewer_model: str = ""

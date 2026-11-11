@@ -115,7 +115,7 @@ def slide_html(brand: Brand, slide, n: int, total: int) -> str:
         t = brand.template
         links = "".join(f"<div>{_e(link.text)}</div>" for link in t.footer_links)
         body = (f'<div class="slide end"><div class="bar"></div>{_logo(brand.logo_path, "biglogo") or _head(brand)}'
-                f'<h1 class="fit">{_e(t.default_cta)}</h1><div class="sub fit">{_e(t.footer_text)}</div>'
+                f'<h1 class="fit">{_e(t.instagram_cta or t.default_cta)}</h1><div class="sub fit">{_e(t.footer_text)}</div>'
                 f'<div class="links">{links}</div>{foot}</div>')
     elif slide.kind == "cover":
         sub = "".join(f'<div class="sub">{_e(b)}</div>' for b in slide.bullets)
