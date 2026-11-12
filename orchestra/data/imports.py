@@ -108,6 +108,16 @@ def record_import(session: Session, assets: AssetStore, *, source_id: str, raw: 
     return sid
 
 
+def load_bars(session: Session, assets: AssetStore, snapshot_id: str) -> list[Bar]:
+    """Daily bars from a price-history snapshot, whatever produced it (an imported CSV or a TSE fetch)."""
+    from .sources.tse import PARSERS
+    snap = session.get(DataSnapshot, snapshot_id)
+    if snap is None:
+        raise KeyError(snapshot_id)
+    raw = assets.get(snap.raw_sha256)
+    return PARSERS[snap.parser](raw) if snap.parser in PARSERS else parse_price_csv(raw)
+
+
 def load_snapshot_bytes(session: Session, assets: AssetStore, snapshot_id: str) -> bytes:
     snap = session.get(DataSnapshot, snapshot_id)
     if snap is None:

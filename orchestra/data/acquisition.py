@@ -34,7 +34,7 @@ def snapshot_id(source_id: str, fetched_at: datetime, raw_sha256: str) -> str:
     return "snap_" + hashlib.sha256(f"{source_id}|{fetched_at.isoformat()}|{raw_sha256}".encode()).hexdigest()[:24]
 
 
-def http_fetcher(timeout: float = 40.0, user_agent: str = "Mozilla/5.0 (compatible; OrchestraBot/0.1)") -> Fetcher:
+def http_fetcher(timeout: float = 40.0, user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36") -> Fetcher:
     async def fetch(url: str) -> bytes:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15), follow_redirects=True,

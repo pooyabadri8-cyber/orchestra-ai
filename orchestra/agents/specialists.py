@@ -17,7 +17,7 @@ from ..analysis.technical import snapshot as technical_snapshot
 from ..assets import AssetStore
 from ..content.calendar import long_date
 from ..content.numbers import BoundPoint
-from ..data.imports import load_snapshot_bytes, parse_price_csv, parse_statements_yaml
+from ..data.imports import load_bars, load_snapshot_bytes, parse_statements_yaml
 from ..brand import Brand
 from ..visual.charts import ChartSpec, groups_flow_chart, price_trend_chart
 from .analysis import AnalysisReport, analyze_market_close
@@ -53,7 +53,7 @@ def market_part(session: Session, *, snapshot_id: str, brand: Brand, run_date: d
 
 def technical_part(session: Session, assets: AssetStore, *, history_snapshot_id: str, subject: str, price_unit: str,
                    now: datetime) -> Part:
-    bars = parse_price_csv(load_snapshot_bytes(session, assets, history_snapshot_id))
+    bars = load_bars(session, assets, history_snapshot_id)
     snap = technical_snapshot(bars)
     points = technical_points(session, snap, subject=subject, source_snapshot_id=history_snapshot_id, price_unit=price_unit, as_of=now)
     facts = [f"روند {subject} بر پایهٔ میانگین‌های متحرک: {snap.trend}."]

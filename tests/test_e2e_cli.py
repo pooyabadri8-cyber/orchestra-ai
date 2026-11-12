@@ -34,6 +34,7 @@ class FakeServices(BaseHTTPRequestHandler):
     plan = PLAN
     draft = DRAFT
     calls: list[str] = []
+    tse_down = False
     prompts: list[tuple[str, str]] = []
 
     def log_message(self, *a):
@@ -49,6 +50,12 @@ class FakeServices(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/page":
             self._send(200, PAGE, "text/html; charset=utf-8")
+        elif self.path.startswith("/tse/tsev2/chart/data/IndexFinancial.aspx") and not FakeServices.tse_down:
+            from tse_samples import index_financial
+            self._send(200, index_financial(), "text/plain")
+        elif self.path.startswith("/tse/api/Index/GetIndexB2History/") and not FakeServices.tse_down:
+            from tse_samples import index_b2
+            self._send(200, index_b2(), "application/json")
         else:
             self._send(404, b"{}", "application/json")
 
@@ -108,6 +115,7 @@ def project(tmp_path):
     port = server.server_address[1]
     FakeServices.plan, FakeServices.draft, FakeServices.calls = PLAN, DRAFT, []
     FakeServices.sent, FakeServices.updates, FakeServices.prompts = [], [], []
+    FakeServices.tse_down = False
     work = tmp_path / "orchestra-ai-main"
     try:
         files = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
@@ -127,6 +135,8 @@ def project(tmp_path):
         "ORCHESTRA_LLM_API_KEY=test-key",
         "ORCHESTRA_LLM_MODEL=model-a,model-b",
         f"ORCHESTRA_BOURSE_TRADER_URL=http://127.0.0.1:{port}/page",
+        f"ORCHESTRA_TSE_OLD_BASE=http://127.0.0.1:{port}/tse",
+        f"ORCHESTRA_TSE_CDN_BASE=http://127.0.0.1:{port}/tse",
         f"ORCHESTRA_TELEGRAM_API_BASE=http://127.0.0.1:{port}/bot",
         f"ORCHESTRA_BALE_API_BASE=http://127.0.0.1:{port}/bot",
         "TELEGRAM_TEST_BOT_TOKEN=", "BALE_TEST_BOT_TOKEN=", "INSTAGRAM_TEST_TOKEN=", "",
@@ -212,6 +222,7 @@ def test_technical_analysis_with_imported_prices(project):
 
 def test_missing_price_history_is_a_clear_message(project):
     FakeServices.plan = TECH_PLAN
+    FakeServices.tse_down = True  # TSE answers 404 and nothing was imported
     log = run_ask(project, "گزارش بازار امروز با تحلیل تکنیکال شاخص کل")
     assert "needs_data" in log and "Traceback" not in log
     assert "import-prices" in log or "سابقهٔ قیمت" in log
@@ -259,3 +270,10 @@ def test_revise_from_the_command_line(project):
     assert "نسخه: 2" in shown and "awaiting_approval" in shown
     assert '"approved"' in cli(project, "approve", rid)
     assert "اصلاح ممکن نیست" in cli(project, "revise", rid, "--note", "x", ok=False) or "منتظر تأیید نیست" in cli(project, "revise", rid, "--note", "x", ok=False)
+
+
+def test_daily_report_fetches_the_index_history_from_tse_by_itself(project):
+    log = run_ask(project, "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن")
+    run_id_of(log)
+    writer = [p for role, p in FakeServices.prompts if role == "writer"][0]
+    assert "تحلیل تکنیکال شاخص کل" in writer and "RSI" in writer

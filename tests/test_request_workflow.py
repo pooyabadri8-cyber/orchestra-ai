@@ -8,7 +8,7 @@ from dbos import DBOS, SetWorkflowID
 from sqlalchemy import select
 
 import orchestra.workflows.request as wf
-from orchestra.db import Destination, LLMCall, PackageRow, PublishJob, Run
+from orchestra.db import DataSnapshot, Destination, LLMCall, PackageRow, PublishJob, Run
 from orchestra.data.imports import record_import
 from orchestra.llm import Gateway, Route
 from orchestra.runtime import set_runtime
@@ -108,8 +108,13 @@ def test_manager_question_and_missing_data_stop_cleanly(engine):
 
     plan = {**PLAN, "params": {"technical_subject": "شاخص کل", "platforms": ["telegram"]}}
     rtm, _, _ = runtime(engine, [plan])
-    rid, handle = start("گزارش بازار با تکنیکال شاخص کل")
-    out = handle.get_result()
+    import wf_support
+    wf_support.TSE_DOWN = True  # not reachable and nothing imported
+    try:
+        rid, handle = start("گزارش بازار با تکنیکال شاخص کل.")
+        out = handle.get_result()
+    finally:
+        wf_support.TSE_DOWN = False
     assert out["status"] == "needs_data" and "سابقهٔ قیمت" in out["message"]
 
 
@@ -205,3 +210,54 @@ def test_revisions_are_limited_and_a_note_is_required(engine):
     submit_decision(rid, pkg.package_hash, "rejected", "user:1", reason="کافی است")
     assert handle.get_result()["status"] == "rejected"
     assert prov.replies == []
+
+
+
+# ------------------------------------------------------------------ the index history comes from TSE by itself
+
+
+def test_daily_report_carries_the_index_technical_picture_fetched_from_tse(engine):
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    writer_prompt = prov.calls[1]
+    assert "تحلیل تکنیکال شاخص کل" in writer_prompt and "RSI" in writer_prompt
+    with rtm.sessions() as s:
+        snaps = s.execute(select(DataSnapshot).where(DataSnapshot.source_id == wf.price_source("شاخص کل"))).scalars().all()
+        run = s.get(Run, rid)
+    assert [x.parser for x in snaps] == ["tse_index_financial@1"]
+    assert not any(f["rule_id"].startswith("DATA-") for f in run.findings)
+
+
+def test_without_tse_the_daily_report_still_comes_with_a_note(engine):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    wf_support.TSE_DOWN = True
+    try:
+        rid, handle = start()
+        assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    finally:
+        wf_support.TSE_DOWN = False
+    with rtm.sessions() as s:
+        notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"].startswith("DATA-")]
+    assert any("TSE" in n for n in notes) and any("تکنیکال اضافه نشد" in n for n in notes)
+    assert "تحلیل تکنیکال" not in prov.calls[1]
+
+
+def test_an_old_history_is_used_but_flagged(engine):
+    import wf_support
+    from tse_samples import index_financial
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    with rtm.sessions.begin() as s:
+        record_import(s, rtm.assets, source_id=wf.price_source("شاخص کل"), raw=index_financial(end=date(2026, 10, 20)),
+                      parser="tse_index_financial@1", now=rtm.clock(), label="old")
+    wf_support.TSE_DOWN = True
+    try:
+        rid, handle = start()
+        assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    finally:
+        wf_support.TSE_DOWN = False
+    with rtm.sessions() as s:
+        notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"].startswith("DATA-")]
+    assert any("2026-10-20" in n and "به‌روز نیست" in n for n in notes)
+    assert "تحلیل تکنیکال شاخص کل" in prov.calls[1]

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     # data sources: a different address for the market page (a mirror, or a local copy for testing)
     bourse_trader_url: str = ""
+    tse_old_base: str = "https://old.tsetmc.com"
+    tse_cdn_base: str = "https://cdn.tsetmc.com"
 
     # publishing
     max_publish_attempts: int = 4

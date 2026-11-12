@@ -27,6 +27,8 @@ TARGETS = [
     ("tsetmc_market_overview_1", "https://cdn.tsetmc.com/api/MarketData/GetMarketOverview/1", "candidate: bourse overview"),
     ("tsetmc_market_overview_2", "https://cdn.tsetmc.com/api/MarketData/GetMarketOverview/2", "candidate: farabourse overview"),
     ("tsetmc_index_b1", "https://cdn.tsetmc.com/api/Index/GetIndexB1LastAll/All/1", "candidate: index list"),
+    ("tsetmc_index_financial", "https://old.tsetmc.com/tsev2/chart/data/IndexFinancial.aspx?i=32097828799138957&t=ph", "used: index history (OHLCV)"),
+    ("tsetmc_index_b2", "https://cdn.tsetmc.com/api/Index/GetIndexB2History/32097828799138957", "used: index history (levels)"),
     ("tsetmc_clienttype_all", "https://cdn.tsetmc.com/api/ClientType/GetClientTypeAll", "candidate: real/legal money flow"),
     ("codal_home", "https://www.codal.ir/", "home page"),
     ("codal_search", "https://search.codal.ir/api/search/v2/q?PageNumber=1", "candidate: latest disclosures"),

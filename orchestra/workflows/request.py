@@ -42,7 +42,9 @@ from ..content.calendar import long_date
 from ..content.numbers import BoundPoint, Claim
 from ..content.package_builder import build_multichannel_package
 from ..content.template import PostParts
-from ..data.imports import load_snapshot_bytes, parse_price_csv
+from ..data.acquisition import AcquisitionError
+from ..data.imports import load_bars, record_import
+from ..data.sources import tse
 from ..db import DataPointRow, DataSnapshot, Run
 from ..llm import BudgetExceeded, LLMError
 from ..package import AssetRef, DataPointRef
@@ -55,6 +57,9 @@ from .market_close import TOPIC, s_acquire, s_decide, s_finish, s_note, s_reques
 WORKFLOW = "handle_request@1"
 MAX_WRITES = 2
 MAX_STALE_MESSAGES = 5
+AUTO_TECHNICAL = "شاخص کل"  # the daily market report always carries the index's technical picture
+AUTO_TECHNICAL_TEMPLATES = ("market_report",)
+STALE_HISTORY_DAYS = 6
 MAX_REVISIONS = 3  # how many times the owner may send one piece of content back
 OWNER_NOTE_MAX = 500
 
@@ -131,6 +136,10 @@ def _latest_snapshot(s, source_id: str) -> str | None:
                      .order_by(DataSnapshot.fetched_at.desc()).limit(1)).scalar_one_or_none()
 
 
+def _note(rule_id: str, message: str) -> dict:
+    return {"severity": "warn", "rule_id": rule_id, "message": message, "field": "data"}
+
+
 def _part_json(part: Part) -> dict:
     return {"title": part.title, "points": [p.model_dump(mode="json") for p in part.points], "facts": list(part.facts),
             "charts": [c.model_dump(mode="json") for c in part.charts]}
@@ -153,16 +162,46 @@ def s_market(org_id: str, snapshot_id: str, day_iso: str) -> dict:
     return {"part": _part_json(part), "excluded": list(excluded)}
 
 
+@DBOS.step(retries_allowed=True, max_attempts=3, interval_seconds=20)
+async def s_fetch_history(subject: str) -> dict:
+    """Fetch the daily history of a market index from TSE and keep it as a snapshot. Not an index we know, or TSE
+    not reachable after the retries: {"error"}; the technical analyst then uses the last history it has, if any."""
+    r = rt()
+    name = tse.canonical_index(subject)
+    if name is None:
+        return {"error": "برای این موضوع منبع خودکار نداریم"}
+    errors = []
+    for ep in tse.endpoints(tse.INDEX_CODES[name], r.tse_old_base, r.tse_cdn_base):
+        try:
+            raw = await r.fetcher(ep.url)
+            bars = tse.PARSERS[ep.parser](raw)
+        except AcquisitionError as e:
+            errors.append(f"{ep.parser}: {e}")
+            continue
+        except (tse.TseError, ValueError) as e:
+            errors.append(f"{ep.parser}: {e}")
+            continue
+        with r.sessions.begin() as s:
+            sid = record_import(s, r.assets, source_id=price_source(name), raw=raw, parser=ep.parser, now=r.clock(),
+                                label=f"tse:{tse.INDEX_CODES[name]}")
+        return {"snapshot_id": sid, "subject": name, "last_day": bars[-1].day.isoformat(), "days": len(bars)}
+    if any("دریافت ناموفق" in e or "HTTP 5" in e or "HTTP 429" in e for e in errors):
+        raise AcquisitionError("TSE: " + " | ".join(errors), retryable=True)  # the network: DBOS tries again
+    return {"error": "TSE: " + " | ".join(errors)}
+
+
 @DBOS.step()
 def s_technical(subject: str) -> dict:
     r = rt()
+    subject = tse.canonical_index(subject) or subject
     with r.sessions.begin() as s:
         sid = _latest_snapshot(s, price_source(subject))
         if sid is None:
-            return {"missing": f"سابقهٔ قیمت «{subject}» وارد نشده است (orchestra import-prices)"}
+            return {"missing": f"سابقهٔ قیمت «{subject}» در دسترس نیست (از TSE دریافت نشد و فایلی هم وارد نشده است)"}
         unit = "point" if "شاخص" in subject else "IRR"
         part = technical_part(s, r.assets, history_snapshot_id=sid, subject=subject, price_unit=unit, now=r.clock())
-    return {"part": _part_json(part)}
+        last_day = load_bars(s, r.assets, sid)[-1].day
+    return {"part": _part_json(part), "last_day": last_day.isoformat()}
 
 
 @DBOS.step()
@@ -174,7 +213,7 @@ def s_fundamental(subject: str) -> dict:
         if st is None or px is None:
             need = "صورت‌های مالی" if st is None else "سابقهٔ قیمت"
             return {"missing": f"{need} «{subject}» وارد نشده است"}
-        bars = parse_price_csv(load_snapshot_bytes(s, r.assets, px))
+        bars = load_bars(s, r.assets, px)
         last = bars[-1]
         price = store_derived(s, metric="price.last_close", subject=subject, value=last.close,
                               spec=Spec("آخرین قیمت پایانی", "IRR", 0, ("rial",)), formula=f"{TECH_V}:last_close@{last.day.isoformat()}",
@@ -403,13 +442,32 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
             return s_finish(run_id, "skipped", detail={"reason": m["skip"]})
         parts.append(m["part"])
         excluded = m["excluded"]
-    for step_id, subject_key, fn in (("technical", "technical_subject", s_technical), ("fundamental", "fundamental_subject", s_fundamental)):
-        if plan.has(step_id):
-            subject = params.get(subject_key) or params.get("subject")
-            out = fn(subject)
-            if "missing" in out:
+    data_notes: list[dict] = []  # told to the owner with the content (not written into it)
+    asked = plan.has("technical")
+    tech_subject = (params.get("technical_subject") or params.get("subject")) if asked else \
+        (AUTO_TECHNICAL if plan.template_id in AUTO_TECHNICAL_TEMPLATES else None)
+    if tech_subject:
+        if tse.canonical_index(tech_subject):
+            try:
+                fetched = await s_fetch_history(tech_subject)
+            except Exception as e:  # noqa: BLE001  TSE unreachable after retries
+                fetched = {"error": f"TSE در دسترس نبود ({type(e).__name__})"}
+            if "error" in fetched:
+                data_notes.append(_note("DATA-TSE", f"سابقهٔ {tech_subject} از TSE تازه نشد: {fetched['error'][:200]}"))
+        out = s_technical(tech_subject)
+        if "missing" in out:
+            if asked:
                 return s_finish(run_id, "needs_data", detail={"message": out["missing"]})
+            data_notes.append(_note("DATA-TECHNICAL", f"بخش تحلیل تکنیکال اضافه نشد: {out['missing']}"))
+        else:
             parts.append(out["part"])
+            if out.get("last_day") and (date.fromisoformat(day) - date.fromisoformat(out["last_day"])).days > STALE_HISTORY_DAYS:
+                data_notes.append(_note("DATA-STALE", f"آخرین روز سابقهٔ {tech_subject} {out['last_day']} است؛ تحلیل تکنیکال به‌روز نیست."))
+    if plan.has("fundamental"):
+        out = s_fundamental(params.get("fundamental_subject") or params.get("subject"))
+        if "missing" in out:
+            return s_finish(run_id, "needs_data", detail={"message": out["missing"]})
+        parts.append(out["part"])
     report = s_compose(snapshot_id or "imports", parts, excluded, day)["report"]
 
     # ---- writer -> checks -> designer -> package -> the owner. The owner may send it back with a note; the team then
@@ -422,6 +480,8 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
         made = await _produce(org_id, run_id, plan, report, day, platforms, str(params.get("focus") or ""), dests,
                               window_minutes, owner_note, attempts_used, version=round_no if current is None else current["version"] + 1,
                               supersedes=None if current is None else current["package_id"])
+        if "findings" in made:
+            made["findings"] = [*data_notes, *(made["findings"] or [])]
         attempts_used += MAX_WRITES
         can_revise = round_no <= MAX_REVISIONS
         if "pkg" in made:

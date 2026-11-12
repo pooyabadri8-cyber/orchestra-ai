@@ -73,6 +73,9 @@ class RecordingNotifier:
         self.requests.append(kw)
 
 
+TSE_DOWN = False  # set by a test to make TSE unreachable
+
+
 def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, ScriptedProvider, RecordingNotifier]:
     engine = make_engine(f"sqlite:///{workdir / 'app.db'}")
     Base.metadata.create_all(engine)
@@ -84,6 +87,12 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
     provider, notifier = ScriptedProvider(replies), RecordingNotifier()
 
     async def fetch(url):
+        if "tsetmc" in url:
+            if TSE_DOWN:
+                from orchestra.data.acquisition import AcquisitionError
+                raise AcquisitionError("HTTP 404 از tsetmc", retryable=False)
+            from tse_samples import index_b2, index_financial
+            return index_financial() if "IndexFinancial" in url else index_b2()
         return page
 
     runtime = Runtime(

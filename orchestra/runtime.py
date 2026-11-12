@@ -39,6 +39,8 @@ class Runtime:
     notifier: ApprovalNotifier = field(default_factory=NullNotifier)
     clock: Callable[[], datetime] = utcnow
     registry_root: Path | None = None
+    tse_old_base: str = "https://old.tsetmc.com"
+    tse_cdn_base: str = "https://cdn.tsetmc.com"
 
 
 _current: Runtime | None = None
