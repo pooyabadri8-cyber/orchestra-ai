@@ -34,6 +34,7 @@ class FakeServices(BaseHTTPRequestHandler):
     plan = PLAN
     draft = DRAFT
     calls: list[str] = []
+    prompts: list[tuple[str, str]] = []
 
     def log_message(self, *a):
         pass
@@ -92,6 +93,7 @@ class FakeServices(BaseHTTPRequestHandler):
         req = json.loads(raw)
         role = {800: "manager", 3500: "writer", 1500: "reviewer"}[req["max_tokens"]]
         FakeServices.calls.append(role)
+        FakeServices.prompts.append((role, json.dumps(req.get("messages"), ensure_ascii=False)))
         answer = {"manager": FakeServices.plan, "writer": FakeServices.draft, "reviewer": CLEAN}[role]
         text = "```json\n" + json.dumps(answer, ensure_ascii=False) + "\n```"  # Gemini often wraps JSON in a fence
         body = {"choices": [{"message": {"content": text}, "finish_reason": "stop"}],
@@ -105,7 +107,7 @@ def project(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
     FakeServices.plan, FakeServices.draft, FakeServices.calls = PLAN, DRAFT, []
-    FakeServices.sent, FakeServices.updates = [], []
+    FakeServices.sent, FakeServices.updates, FakeServices.prompts = [], [], []
     work = tmp_path / "orchestra-ai-main"
     try:
         files = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
@@ -245,3 +247,15 @@ def test_an_unexpected_error_in_a_middle_step_ends_the_run_instead_of_hanging(pr
     (project / "orchestra" / "visual" / "fonts" / "Vazirmatn-Bold.woff2").unlink()  # the designer will crash
     log = run_ask(project, "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن")
     assert "→ failed" in log and "FileNotFoundError" in log
+
+
+def test_revise_from_the_command_line(project):
+    rid = run_id_of(run_ask(project, "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن"))
+    out = cli(project, "revise", rid, "--note", "تیتر کوتاه‌تر شود")
+    assert "نسخهٔ جدید آماده است" in out
+    writer = [p for role, p in FakeServices.prompts if role == "writer"]
+    assert len(writer) == 2 and "تیتر کوتاه‌تر شود" in writer[1]
+    shown = cli(project, "show", rid)
+    assert "نسخه: 2" in shown and "awaiting_approval" in shown
+    assert '"approved"' in cli(project, "approve", rid)
+    assert "اصلاح ممکن نیست" in cli(project, "revise", rid, "--note", "x", ok=False) or "منتظر تأیید نیست" in cli(project, "revise", rid, "--note", "x", ok=False)

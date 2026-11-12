@@ -239,6 +239,9 @@ async def _market_close(org_id: str, day_iso: str, destinations: list[list[str]]
         if message.get("package_hash") != pkg["package_hash"]:
             s_note(run_id, f"ignored a decision for another version ({str(message.get('package_hash'))[:12]})")
             continue
+        if message.get("decision") not in ("approved", "rejected"):
+            s_note(run_id, "ignored a message that is not a decision this workflow supports")
+            continue
         result = s_decide(org_id, run_id, pkg["package_id"], pkg["package_hash"], message, dest_ids)
         return {"run_id": run_id, **result, "package_id": pkg["package_id"]}
     return s_finish(run_id, "expired", detail={"reason": "too many decisions for other versions"})
@@ -247,7 +250,9 @@ async def _market_close(org_id: str, day_iso: str, destinations: list[list[str]]
 def submit_decision(run_id: str, package_hash: str, decision: str, approver: str,
                     destinations: list[str] | None = None, reason: str | None = None) -> None:
     """Called by the approval bot (or a test): deliver a human decision to the waiting run."""
-    if decision not in ("approved", "rejected"):
-        raise ValueError("decision must be approved or rejected")
+    if decision not in ("approved", "rejected", "revise"):
+        raise ValueError("decision must be approved, rejected or revise")
+    if decision == "revise" and not (reason or "").strip():
+        raise ValueError("a revision needs a note saying what to change")
     DBOS.send(run_id, {"package_hash": package_hash, "decision": decision, "approver": approver,
                        "destinations": destinations, "reason": reason}, TOPIC)

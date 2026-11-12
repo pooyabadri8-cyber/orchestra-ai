@@ -248,7 +248,8 @@ class ControlPrompt(Base):
     run_id: Mapped[str] = mapped_column(String(128), index=True)
     package_id: Mapped[str] = mapped_column(String(64))
     package_hash: Mapped[str] = mapped_column(String(64))
-    # sending -> pending -> deciding -> approved | rejected | closed;  void = never fully shown. Rows are never
+    round: Mapped[int] = mapped_column(Integer, default=0)  # the run's approval round this question belongs to
+    # sending -> pending -> deciding -> approved | rejected | revising | unclear | closed;  void = never fully shown. Rows are never
     # deleted, so a number that was once on a button can never come to mean another run.
     state: Mapped[str] = mapped_column(String(16), default="pending")
     messages: Mapped[list] = mapped_column(JSON, default=list)  # [[chat_id, message_id], ...] of the question itself

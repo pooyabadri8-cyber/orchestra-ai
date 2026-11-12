@@ -3,7 +3,8 @@
 In the control chat (Telegram or Bale) the owner can
   - write a request in plain Persian: the Manager plans it and the team prepares the content;
   - see exactly what would be published (every channel's text, the Instagram caption and slides);
-  - approve or reject with one button (or by typing «تأیید ۱۲» / «رد ۱۲ دلیل»);
+  - approve or reject with one button (or by typing «تأیید ۱۲» / «رد ۱۲ دلیل»), or send it back with a note
+    («اصلاح ۱۲ تیتر کوتاه‌تر شود»): the team makes a new version from the same data;
   - be told what happened to every publish job, and act on the unclear ones (/sent, /retry);
   - stop everything (/pause) and continue (/resume).
 A daily schedule (orgs/<org>/schedule.yaml) can start requests by itself; they still wait for approval.
@@ -54,6 +55,7 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 • هر درخواستی را ساده بنویسید، مثل:
   «گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن»
 • وقتی محتوا آماده شد، متن و اسلایدها را همین‌جا می‌فرستم و با دکمه تأیید یا رد می‌کنید.
+• اگر تغییری می‌خواهید دکمهٔ «اصلاح» را بزنید و بنویسید چه چیزی عوض شود؛ نسخهٔ جدید می‌آید.
 
 دستورها:
 /status — آخرین کارها
@@ -61,7 +63,8 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /pause — توقف فوری همهٔ انتشارها
 /resume — ادامهٔ انتشار
 /sent شماره — «این پست روی کانال هست» (برای ارسال نامعلوم)
-/retry شماره — دوباره بفرست"""
+/retry شماره — دوباره بفرست
+/cancel — انصراف از نوشتن توضیح اصلاح"""
 
 
 class Engine(Protocol):
@@ -143,6 +146,10 @@ def build_preview(content: dict, control_platform: str) -> list[tuple]:
         body, mode = g["shown"] or (text, None)
         items.append(("text", body, mode))
     return items
+
+
+def _round(run: Run) -> int:
+    return int((run.detail or {}).get("approval_round") or 0)
 
 
 def _num(text: str) -> int | None:
@@ -241,6 +248,9 @@ class ControlService:
             if action in ("ok", "no") and pid.isdigit():
                 self.api.answer_button(str(cq.get("id")), "در حال ثبت…")
                 self.decide(int(pid), "approved" if action == "ok" else "rejected", user, chat, None)
+            elif action == "ed" and pid.isdigit():
+                self.api.answer_button(str(cq.get("id")))
+                self.ask_note(int(pid), chat)
             return
         msg = u.get("message") or {}
         text = (msg.get("text") or "").strip()
@@ -260,7 +270,14 @@ class ControlService:
         actor = f"{self.api.platform}:{user}"
         word = text.split()[0].lower().split("@")[0]
         rest = text[len(text.split()[0]):].strip()
-        if word in ("/start", "/help"):
+        pending_note = self._state(f"note:{chat}")
+        if pending_note and not word.startswith("/"):  # the owner pressed «اصلاح»: this message is the note
+            self._set_state(f"note:{chat}", "")
+            self.decide(int(pending_note), "revise", user, chat, text)
+        elif word == "/cancel":
+            self._set_state(f"note:{chat}", "")
+            self._say(chat, "انصراف ثبت شد." if pending_note else "چیزی برای انصراف نیست.")
+        elif word in ("/start", "/help"):
             self._say(chat, HELP)
         elif word == "/status":
             self._say(chat, self.status_text())
@@ -277,13 +294,16 @@ class ControlService:
                 self._say(chat, "ثبت شد." if self.engine.confirm_sent(n, actor) else "این ارسال در وضعیت «نامعلوم» نیست.")
             else:
                 self._say(chat, "دوباره در صف قرار گرفت." if self.engine.requeue(n, actor) else "این ارسال قابل فرستادن دوباره نیست.")
-        elif word in ("تأیید", "تایید", "رد"):
+        elif word in ("تأیید", "تایید", "رد", "اصلاح"):
             n = _num(rest)
             if n is None:
-                self._say(chat, "شمارهٔ درخواست تأیید را هم بنویسید، مثل: تأیید 12")
+                self._say(chat, f"شمارهٔ درخواست تأیید را هم بنویسید، مثل: {word} 12")
                 return
             reason = re.sub(r"^\s*[\d۰-۹٠-٩]+\s*", "", rest).strip() or None
-            self.decide(n, "rejected" if word == "رد" else "approved", user, chat, reason)
+            if word == "اصلاح" and not reason:
+                self.ask_note(n, chat)
+                return
+            self.decide(n, {"رد": "rejected", "اصلاح": "revise"}.get(word, "approved"), user, chat, reason)
         elif word.startswith("/"):
             self._say(chat, "این دستور را نمی‌شناسم. /help را بزنید.")
         else:
@@ -346,8 +366,10 @@ class ControlService:
                 pkg = s.get(PackageRow, run.package_id)
                 if pkg is None or pkg.status != "active":
                     continue
-                if s.execute(select(ControlPrompt.id).where(ControlPrompt.run_id == run.id, ControlPrompt.state != "void",
-                                                            ControlPrompt.package_hash == pkg.package_hash)).first():
+                # asked already in this round? (a void or closed question does not count: the owner must not be
+                # left with content that waits and nothing to press)
+                if s.execute(select(ControlPrompt.id).where(ControlPrompt.run_id == run.id, ControlPrompt.round == _round(run),
+                                                            ControlPrompt.state.notin_(("void", "closed")))).first():
                     continue
                 todo.append((run, pkg))
         for run, pkg in todo:
@@ -365,14 +387,20 @@ class ControlService:
         content = json.loads(pkg.content_json)
         with self.sessions.begin() as s:  # the prompt exists before anything is sent: its number goes on the buttons
             prompt = ControlPrompt(org_id=self.org_id, run_id=run.id, package_id=pkg.package_id,
-                                   package_hash=pkg.package_hash, state="sending")
+                                   package_hash=pkg.package_hash, round=_round(run), state="sending")
             s.add(prompt)
             s.flush()
             pid = prompt.id
         try:
             messages = []
             request = (run.detail or {}).get("request")
-            head = "📋 محتوای آماده برای تأیید" + (f"\nدرخواست: «{request[:200]}»" if request else "")
+            detail = run.detail or {}
+            head = "📋 محتوای آماده برای تأیید" + (f" — نسخهٔ {pkg.version}" if pkg.version > 1 else "")
+            head += f"\nدرخواست: «{request[:200]}»" if request else ""
+            if detail.get("revision_error"):
+                head = (f"⚠️ نسخهٔ جدید ساخته نشد: {str(detail['revision_error'])[:400]}\n"
+                        f"نسخهٔ قبلی همچنان منتظر تصمیم شماست.\n\n{head}")
+            can_revise = run.template != "market_close" and bool(detail.get("can_revise"))
             notes = [f"⚠️ {f['message']}" for f in run.findings or [] if f.get("severity") != "block"]
             for chat in self.owners:
                 self.api.send_text(chat, "\n".join([head, *notes[:8]]))
@@ -385,9 +413,11 @@ class ControlService:
                         for part in split_text(item[1]):
                             self.api.send_text(chat, part, parse_mode=item[2])
                 dests = "، ".join(d["destination_id"] for d in content["destinations"])
+                typed = f"«تأیید {pid}» / «رد {pid} دلیل»" + (f" / «اصلاح {pid} توضیح»" if can_revise else "")
                 question = (f"درخواست تأیید شمارهٔ {pid}\nمقصدها: {dests}\nشناسهٔ بسته: {pkg.package_hash[:12]}\n\n"
-                            f"منتشر شود؟ (یا بنویسید: «تأیید {pid}» / «رد {pid} دلیل»)")
-                mid = self.api.send_text(chat, question, buttons=[[("✅ تأیید و انتشار", f"ok:{pid}"), ("❌ رد", f"no:{pid}")]])
+                            f"منتشر شود؟ (یا بنویسید: {typed})")
+                row = [("✅ تأیید و انتشار", f"ok:{pid}"), *([("✏️ اصلاح", f"ed:{pid}")] if can_revise else []), ("❌ رد", f"no:{pid}")]
+                mid = self.api.send_text(chat, question, buttons=[row])
                 messages.append([chat, mid])
         except Exception:
             with self.sessions.begin() as s:  # nothing half-shown stays answerable; its number is never used again
@@ -408,22 +438,45 @@ class ControlService:
         with self.sessions() as s:
             prompt = s.get(ControlPrompt, pid)
             run = s.get(Run, prompt.run_id)
-        if run is None or run.status != "awaiting_approval" or run.package_id != prompt.package_id:
+        if run is None or run.status != "awaiting_approval" or run.package_id != prompt.package_id or _round(run) != prompt.round:
             self._finish_prompt(prompt, "closed", "⌛️ این محتوا دیگر منتظر تأیید نیست.")
             return
+        if decision == "revise":
+            reason = " ".join((reason or "").split())[:500]
+            if not reason or not (run.detail or {}).get("can_revise") or run.template == "market_close":
+                with self.sessions.begin() as s:  # still answerable: approve or reject
+                    s.execute(update(ControlPrompt).where(ControlPrompt.id == pid).values(state="pending", decided_by=None))
+                self._say(chat, "برای این محتوا دیگر اصلاح ممکن نیست؛ تأیید یا رد کنید." if reason else "توضیح اصلاح خالی است.")
+                return
         try:
             result = self.engine.decide(prompt.run_id, prompt.package_hash, decision, actor, reason)
         except Exception as e:  # noqa: BLE001
             log.exception("decision for %s failed", prompt.run_id)
-            self._finish_prompt(prompt, "closed", f"⚠️ ثبت تصمیم کامل نشد ({type(e).__name__}). با /status وضعیت را ببینید.")
+            # The decision may have reached the run. Asking again could collect a second, different answer while
+            # the first is still on its way, so this question stays closed to buttons ("unclear") and is not repeated.
+            self._finish_prompt(prompt, "unclear", f"⚠️ ثبت تصمیم کامل نشد ({type(e).__name__}). با /status وضعیت را ببینید.")
             return
         status = result.get("status")
         if status == "approved":
             self._finish_prompt(prompt, "approved", f"✅ درخواست {pid} تأیید شد؛ در صف انتشار است.")
+        elif status == "revising":
+            self._finish_prompt(prompt, "revising", f"✏️ درخواست {pid}: اصلاح ثبت شد؛ نسخهٔ جدید را همین‌جا می‌فرستم.\nتوضیح شما: {reason}")
         elif status == "rejected":
             self._finish_prompt(prompt, "rejected", f"❌ درخواست {pid} رد شد." + (f"\nدلیل: {reason}" if reason else ""))
         else:
             self._finish_prompt(prompt, "closed", f"⚠️ درخواست {pid}: {result.get('error') or status}")
+
+    def ask_note(self, pid: int, chat: str) -> None:
+        with self.sessions() as s:
+            p = s.get(ControlPrompt, pid)
+            run = s.get(Run, p.run_id) if p is not None and p.org_id == self.org_id else None
+        if p is None or run is None or p.state != "pending":
+            self._say(chat, f"درخواست تأیید {pid} باز نیست.")
+        elif not (run.detail or {}).get("can_revise") or run.template == "market_close":
+            self._say(chat, "برای این محتوا دیگر اصلاح ممکن نیست؛ تأیید یا رد کنید.")
+        else:
+            self._set_state(f"note:{chat}", str(pid))
+            self._say(chat, f"بنویسید در درخواست {pid} چه چیزی عوض شود. پیام بعدی شما به نویسنده داده می‌شود. (انصراف: /cancel)")
 
     def _finish_prompt(self, prompt: ControlPrompt, state: str, text: str) -> None:
         with self.sessions.begin() as s:
@@ -440,14 +493,15 @@ class ControlService:
             stale = []
             for p in prompts:
                 run = s.get(Run, p.run_id)
-                if run is None or run.status != "awaiting_approval" or run.package_id != p.package_id:
+                if run is None or run.status != "awaiting_approval" or run.package_id != p.package_id or _round(run) != p.round:
                     stale.append((p, run.status if run else "حذف‌شده"))
         for p, status in stale:
             with self.sessions.begin() as s:
                 n = s.execute(update(ControlPrompt).where(ControlPrompt.id == p.id, ControlPrompt.state == "pending")
                               .values(state="closed")).rowcount
             if n:
-                text = f"⌛️ درخواست تأیید {p.id} بسته شد ({STATUS_FA.get(status, status)})."
+                why = "نسخهٔ تازه‌تری آمده است" if status == "awaiting_approval" else STATUS_FA.get(status, status)
+                text = f"⌛️ درخواست تأیید {p.id} بسته شد ({why})."
                 for chat, mid in p.messages or []:
                     if mid:
                         self.api.replace_text(chat, mid, text)

@@ -124,3 +124,84 @@ def test_technical_section_uses_imported_history(engine):
     assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked"}, timeout=60) == "awaiting_approval"
     writer_prompt = prov.calls[1]
     assert "[تحلیل تکنیکال شاخص کل" in writer_prompt and "RSI" in writer_prompt and "price_trend" not in writer_prompt
+
+
+# ------------------------------------------------------------------ the owner sends content back with a note
+
+DRAFT2 = {**DRAFT, "post": {**DRAFT["post"], "headline": "شاخص کل {{P3|abs_pct}} بالا رفت"}}
+
+
+def waiting(rtm, rid, round_no, timeout=90):
+    """Wait until the run waits for a decision in the given approval round; return (run, package row)."""
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        with rtm.sessions() as s:
+            run = s.get(Run, rid)
+            if run is not None and run.status not in ("planning", "running", "awaiting_approval"):
+                raise AssertionError(f"run ended as {run.status}: {run.detail}")
+            if run is not None and run.status == "awaiting_approval" and run.detail.get("approval_round") == round_no:
+                return run, s.get(PackageRow, run.package_id)
+        time.sleep(0.1)
+    raise AssertionError("timed out waiting for the approval round")
+
+
+def test_owner_note_makes_a_new_version_and_only_that_one_can_be_approved(engine):
+    rtm, prov, notifier = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN, DRAFT2, CLEAN, CLEAN])
+    rid, handle = start()
+    run, v1 = waiting(rtm, rid, 1)
+    assert run.detail["can_revise"] is True and v1.version == 1
+
+    submit_decision(rid, v1.package_hash, "revise", "user:1", reason="تیتر را   کوتاه‌تر کن")
+    run, v2 = waiting(rtm, rid, 2)
+    assert v2.version == 2 and v2.supersedes == v1.package_id and v2.package_hash != v1.package_hash
+    assert "تیتر را کوتاه‌تر کن" in prov.calls[4] and "صاحب رسانه" in prov.calls[4]  # the writer was given the note
+    assert "شاخص کل ۲٫۳۹٪ بالا رفت" in json.loads(v2.content_json)["destinations"][0]["delivery_plan"][0]["body"]
+    with rtm.sessions() as s:
+        assert s.get(PackageRow, v1.package_id).status == "superseded"
+        steps = [c.step_key for c in s.execute(select(LLMCall).order_by(LLMCall.id)).scalars()]
+    assert steps[4:] == ["write.3", "review.editor.3", "review.compliance.3"]  # step keys never repeat
+    import time
+    for _ in range(100):  # the approval request is sent right after the round becomes visible
+        if len(notifier.requests) == 2:
+            break
+        time.sleep(0.05)
+    assert len(notifier.requests) == 2
+
+    submit_decision(rid, v1.package_hash, "approved", "user:1")  # a decision for the old version changes nothing
+    submit_decision(rid, v2.package_hash, "approved", "user:1")
+    result = handle.get_result()
+    assert result["status"] == "approved" and result["package_id"] == v2.package_id
+    with rtm.sessions() as s:
+        assert {j.package_id for j in s.execute(select(PublishJob)).scalars()} == {v2.package_id}
+
+
+def test_if_the_new_version_cannot_be_made_the_last_good_one_keeps_waiting(engine):
+    block = {"findings": [{"severity": "block", "quote": "پول حقیقی وارد بازار شد", "problem": "توصیهٔ ضمنی"}]}
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN, DRAFT, CLEAN, block, DRAFT, CLEAN, block])
+    rid, handle = start()
+    _, v1 = waiting(rtm, rid, 1)
+    submit_decision(rid, v1.package_hash, "revise", "user:1", reason="لحن را هیجانی کن")
+    run, still = waiting(rtm, rid, 2)
+    assert still.package_id == v1.package_id and still.status == "active"
+    assert "کنترل کیفیت" in run.detail["revision_error"] and "توصیهٔ ضمنی" in run.detail["revision_error"]
+    submit_decision(rid, v1.package_hash, "approved", "user:1")
+    assert handle.get_result()["status"] == "approved"
+
+
+def test_revisions_are_limited_and_a_note_is_required(engine):
+    replies = [PLAN, DRAFT, CLEAN, CLEAN] + [DRAFT2, CLEAN, CLEAN, DRAFT, CLEAN, CLEAN, DRAFT2, CLEAN, CLEAN]
+    rtm, prov, _ = runtime(engine, replies)
+    rtm.gateway.max_calls_per_run = 40
+    rid, handle = start()
+    _, pkg = waiting(rtm, rid, 1)
+    with pytest.raises(ValueError):
+        submit_decision(rid, pkg.package_hash, "revise", "user:1", reason="  ")
+    for round_no in range(2, wf.MAX_REVISIONS + 2):
+        submit_decision(rid, pkg.package_hash, "revise", "user:1", reason=f"تغییر {round_no}")
+        run, pkg = waiting(rtm, rid, round_no)
+    assert run.detail["can_revise"] is False and pkg.version == wf.MAX_REVISIONS + 1
+    submit_decision(rid, pkg.package_hash, "revise", "user:1", reason="یک بار دیگر")  # ignored: none left
+    submit_decision(rid, pkg.package_hash, "rejected", "user:1", reason="کافی است")
+    assert handle.get_result()["status"] == "rejected"
+    assert prov.replies == []

@@ -105,7 +105,7 @@ def test_request_approve_publish_from_the_phone(project, service, platform):  # 
     q = wait_for(question, service)
     assert q["chat_id"] == OWNER
     buttons = json.loads(q["reply_markup"])["inline_keyboard"][0]
-    assert [b["callback_data"][:3] for b in buttons] == ["ok:", "no:"]
+    assert [b["callback_data"][:3] for b in buttons] == ["ok:", "ed:", "no:"]
     texts = control_texts()
     assert any("دریافت شد" in t for t in texts)
     assert any("شاخص کل" in t and "{{" not in t for t in texts), texts  # the channel text itself was shown
@@ -182,20 +182,25 @@ def test_killing_the_service_at_random_moments_never_publishes_twice(project, se
     configure(project, "bale")
     service.start()
     say(REQUEST)
-    pressed, restarts = False, 0
-    deadline = time.monotonic() + 240
+    restarts, pressed_pid, wait_after = 0, None, 0
+    noted = not (rnd.random() < 0.6)  # in most runs the owner first sends it back with a note
+    deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         while service.output().count("ربات کنترل روشن است") <= restarts:  # count from the moment it is working
             time.sleep(0.05)
         time.sleep(rnd.choice([rnd.uniform(0.0, 1.0), rnd.uniform(0.0, 7.0)]))
-        q = [m for m in sent("CTRL", "sendMessage") if "reply_markup" in m]
-        if q and not pressed:
-            press(json.loads(q[-1]["reply_markup"])["inline_keyboard"][0][0]["callback_data"])
-            pressed = True
-            time.sleep(rnd.uniform(0.0, 1.5))
         texts = control_texts()
+        qs = questions()
+        latest = json.loads(qs[-1]["reply_markup"])["inline_keyboard"][0][0]["callback_data"].split(":")[1] if qs else None
+        if latest and not noted:
+            say(f"اصلاح {latest} تیتر کوتاه‌تر شود")
+            noted, wait_after = True, len(qs)
+        elif latest and noted and latest != pressed_pid and len(qs) > wait_after:
+            press(f"ok:{latest}")  # always the newest question; an older button must be dead
+            pressed_pid = latest
+            time.sleep(rnd.uniform(0.0, 1.5))
         done = sum(("منتشر شد" in t or "نامعلوم" in t or "منتشر نشد" in t) and t.startswith("ارسال") for t in texts)
-        if pressed and done >= 3:
+        if pressed_pid and done >= 3:
             break
         service.stop()
         service.start()
@@ -212,8 +217,8 @@ def test_killing_the_service_at_random_moments_never_publishes_twice(project, se
             assert len(sent(token)) == 1, line
         else:
             assert "unknown" in line, line  # cut mid-send: a human decides, never an automatic resend
-    assert FakeServices.calls.count("writer") <= 2, FakeServices.calls  # finished steps are not paid for again
-    print(f"seed {seed}: {restarts} restarts, model calls {FakeServices.calls}")
+    assert FakeServices.calls.count("writer") <= 4 and FakeServices.calls.count("manager") <= 2, FakeServices.calls
+    print(f"seed {seed}: {restarts} restarts, {len(questions())} questions, model calls {FakeServices.calls}")
 
 
 def test_a_wrong_token_is_explained_at_start(project):  # noqa: F811
@@ -225,3 +230,33 @@ def test_a_wrong_token_is_explained_at_start(project):  # noqa: F811
     p = subprocess.run([sys.executable, "-m", "orchestra.cli", "serve"], cwd=project, env=env_for(project),
                        capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert p.returncode != 0 and "توکن را نپذیرفت" in p.stdout + p.stderr and "Traceback" not in p.stderr
+
+
+def questions():
+    return [m for m in sent("CTRL", "sendMessage") if "reply_markup" in m]
+
+
+def test_send_back_with_a_note_then_approve_the_new_version(project, service):  # noqa: F811
+    configure(project, "bale")
+    service.start()
+    say(REQUEST)
+    q1 = wait_for(lambda: questions(), service)[0]
+    row = [b["callback_data"] for b in json.loads(q1["reply_markup"])["inline_keyboard"][0]]
+    assert row == ["ok:1", "ed:1", "no:1"]
+    press("ed:1")
+    wait_for(lambda: any("چه چیزی عوض شود" in t for t in control_texts()), service)
+    say("تیتر را کوتاه‌تر کن")
+    wait_for(lambda: len(questions()) == 2, service)
+    assert any("نسخهٔ 2" in t for t in control_texts())
+    writer_prompts = [p for role, p in FakeServices.prompts if role == "writer"]
+    assert len(writer_prompts) == 2 and "تیتر را کوتاه‌تر کن" in writer_prompts[1] and "تیتر را کوتاه‌تر کن" not in writer_prompts[0]
+    assert FakeServices.calls.count("manager") == 1  # the plan and the data are not redone
+    assert not sent("TGCHAN") and not sent("BLCHAN")
+
+    press("ok:1")  # the first version's button is dead
+    wait_for(lambda: any("باز نیست" in t for t in control_texts()), service)
+    press("ok:2")
+    wait_for(lambda: sent("TGCHAN", "sendMessage") and sent("BLCHAN", "sendMessage"), service)
+    wait_for(lambda: sum("✅ منتشر شد" in t for t in control_texts()) >= 2, service)
+    assert len(sent("TGCHAN")) == 1 and len(sent("BLCHAN")) == 1
+    assert "Traceback" not in service.output(), service.output()

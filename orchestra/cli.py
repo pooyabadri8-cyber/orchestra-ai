@@ -311,6 +311,48 @@ def _decide(cfg: Settings, a, decision: str) -> None:
     dbos.destroy()
 
 
+def cmd_revise(cfg: Settings, a) -> None:
+    """Send waiting content back to the team with a note; wait for the new version (or for why there is none)."""
+    import time
+
+    from .workflows import market_close as wf
+    from .workflows import request as _request  # noqa: F401
+    note = " ".join(a.note.split())
+    with _sessions(cfg)() as s:
+        run = s.get(Run, a.run_id)
+        if run is None or run.status != "awaiting_approval":
+            sys.exit("این اجرا منتظر تأیید نیست.")
+        if not note or not (run.detail or {}).get("can_revise"):
+            sys.exit("برای این اجرا اصلاح ممکن نیست (توضیح خالی است، یا دیگر نوبت اصلاحی نمانده).")
+        pkg = s.get(PackageRow, run.package_id)
+        before = int((run.detail or {}).get("approval_round") or 0)
+    rtm = _runtime(cfg)
+    set_runtime(rtm)
+    dbos = _launch_dbos(cfg)
+    status = dbos.get_workflow_status(a.run_id)
+    if status is None or status.app_version != APP_VERSION:
+        dbos.destroy()
+        sys.exit("این اجرا با نسخهٔ قدیمی‌تر برنامه ساخته شده و دیگر قابل ادامه نیست. همان درخواست را دوباره اجرا کنید.")
+    wf.submit_decision(a.run_id, pkg.package_hash, "revise", f"user:{os.environ.get('USERNAME') or os.environ.get('USER') or 'owner'}", reason=note)
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        with rtm.sessions() as s:
+            run = s.get(Run, a.run_id)
+        d = run.detail or {}
+        if run.status == "awaiting_approval" and int(d.get("approval_round") or 0) > before:
+            if d.get("revision_error"):
+                print(f"نسخهٔ جدید ساخته نشد: {d['revision_error']}\nنسخهٔ قبلی همچنان منتظر تأیید است.")
+            else:
+                print(f"نسخهٔ جدید آماده است:  python -m orchestra.cli show {a.run_id}")
+            leave_runs_waiting()
+        if run.status not in ("awaiting_approval", "running"):
+            print(f"اجرا: {a.run_id} → {run.status}")
+            leave_runs_waiting(1)
+        time.sleep(0.5)
+    print("اصلاح ثبت شد ولی نسخهٔ جدید هنوز آماده نیست؛ بعداً `show` را بزنید.")
+    leave_runs_waiting(1)
+
+
 def _publisher(cfg: Settings) -> Publisher:
     def adapter(dest: Destination):
         token = os.environ.get(dest.secret_env, "")
@@ -363,6 +405,8 @@ class DbosEngine:
 
         from .workflows import market_close as wf
         wf.submit_decision(run_id, package_hash, decision, actor, reason=reason)
+        if decision == "revise":
+            return {"status": "revising"}  # the run keeps going; the new version arrives as a new approval round
         deadline = time.monotonic() + DECIDE_TIMEOUT_S
         while time.monotonic() < deadline:
             st = self.dbos.get_workflow_status(run_id)
@@ -459,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("show"); p.add_argument("run_id")
     p = sub.add_parser("approve"); p.add_argument("run_id"); p.add_argument("--only", nargs="*")
     p = sub.add_parser("reject"); p.add_argument("run_id"); p.add_argument("--reason", default=None); p.set_defaults(only=None)
+    p = sub.add_parser("revise"); p.add_argument("run_id"); p.add_argument("--note", required=True)
     sub.add_parser("publish")
     p = sub.add_parser("serve"); p.add_argument("--org", default="pouyan")
     sub.add_parser("jobs")
@@ -486,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         _decide(cfg, a, "approved")
     elif a.cmd == "reject":
         _decide(cfg, a, "rejected")
+    elif a.cmd == "revise":
+        cmd_revise(cfg, a)
     elif a.cmd == "publish":
         cmd_publish(cfg, a)
     elif a.cmd == "serve":

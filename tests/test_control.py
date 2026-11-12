@@ -315,7 +315,9 @@ def test_a_failed_decision_is_reported_and_never_published(bot, sessions, assets
     engine.decide_error = TimeoutError("slow")
     api.press("ok:1")
     svc.tick()
-    assert prompt(sessions).state == "closed" and jobs(sessions) == [] and "کامل نشد" in api.texts()[-1]
+    assert prompt(sessions).state == "unclear" and jobs(sessions) == [] and "کامل نشد" in api.texts()[-1]
+    svc.tick()
+    assert len([m for m in api.out if m.get("buttons")]) == 1  # not asked again: the first answer may still arrive
 
 
 def test_restart_makes_an_interrupted_decision_answerable_again(bot, sessions, assets):
@@ -481,3 +483,110 @@ def test_bale_gets_no_parse_mode():
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
     _api(handler, "bale").send_text("1", "*x*", parse_mode="HTML", buttons=[[("بله", "ok:1")]])
     assert "parse_mode" not in bodies[0] and "link_preview" not in bodies[0] and "inline_keyboard" in bodies[0]
+
+
+# ------------------------------------------------------------------ sending content back with a note
+
+
+def revisable_run(sessions, assets, run_id="pouyan:req:x", round_no=1, can_revise=True, **kw):
+    pkg = waiting_run(sessions, assets, run_id=run_id, **kw)
+    with sessions.begin() as s:
+        run = s.get(Run, run_id)
+        run.detail = {**run.detail, "approval_round": round_no, "can_revise": can_revise}
+    return pkg
+
+
+class RevisingEngine(FakeEngine):
+    """Like the real engine: a revise decision is only handed over; the workflow makes the next round later."""
+
+    def decide(self, run_id, package_hash, decision, actor, reason):
+        if decision == "revise":
+            self.notes = [*getattr(self, "notes", []), (run_id, package_hash, reason)]
+            return {"status": "revising"}
+        return super().decide(run_id, package_hash, decision, actor, reason)
+
+
+@pytest.fixture
+def rbot(sessions, assets, clock):
+    add_destinations(sessions)
+    api, engine = FakeApi(), RevisingEngine(sessions, assets, clock)
+    return ControlService(org_id="pouyan", api=api, engine=engine, sessions=sessions, assets=assets, owners=(OWNER,), clock=clock), api, engine
+
+
+def test_revise_button_then_note_then_new_version_gets_a_new_question(rbot, sessions, assets):
+    svc, api, engine = rbot
+    v1 = revisable_run(sessions, assets)
+    svc.tick()
+    q = [m for m in api.out if m.get("buttons")][-1]
+    assert [cb for _, cb in q["buttons"][0]] == ["ok:1", "ed:1", "no:1"]
+    api.press("ed:1")
+    svc.tick()
+    assert "چه چیزی عوض شود" in api.texts()[-1]
+    api.say("تیتر را کوتاه‌تر کن")  # this is the note, not a new request
+    svc.tick()
+    assert engine.started == [] and engine.notes == [("pouyan:req:x", v1.package_hash, "تیتر را کوتاه‌تر کن")]
+    assert prompt(sessions).state == "revising" and any("اصلاح ثبت شد" in t for t in api.texts())
+    svc.tick()
+    svc.tick()
+    assert len([m for m in api.out if m.get("buttons")]) == 1  # the old content is not offered again meanwhile
+    api.press("ok:1")
+    svc.tick()
+    assert jobs(sessions) == []  # and its button is dead
+
+    v2 = make_package(assets, version=2, supersedes=v1.package_id, body="متن نسخهٔ دوم")
+    with sessions.begin() as s:  # what the workflow does when the new version is ready
+        store_package(s, v2)
+        run = s.get(Run, "pouyan:req:x")
+        run.package_id, run.detail = v2.package_id, {**run.detail, "approval_round": 2}
+    svc.tick()
+    q2 = [m for m in api.out if m.get("buttons")][-1]
+    assert q2["buttons"][0][0][1] == "ok:2" and any("نسخهٔ 2" in t for t in api.texts())
+    api.press("ok:2")
+    svc.tick()
+    assert {j.package_id for j in jobs(sessions)} == {v2.package_id} and prompt(sessions, 2).state == "approved"
+
+
+def test_revise_by_typing_and_cancel(rbot, sessions, assets):
+    svc, api, engine = rbot
+    revisable_run(sessions, assets)
+    svc.tick()
+    api.say("اصلاح ۱")  # no note yet: the bot asks for it
+    svc.tick()
+    api.say("/cancel")
+    svc.tick()
+    assert "انصراف ثبت شد." in api.texts()
+    api.say("گزارش هفتگی بنویس")  # after cancelling, a message is a request again
+    svc.tick()
+    assert engine.started == [("گزارش هفتگی بنویس", True)] and prompt(sessions).state == "pending"
+    api.say("اصلاح 1 عدد شاخص را در تیتر بیاور")
+    svc.tick()
+    assert engine.notes[0][2] == "عدد شاخص را در تیتر بیاور" and prompt(sessions).state == "revising"
+
+
+def test_when_the_new_version_fails_the_old_one_is_offered_again_with_the_reason(rbot, sessions, assets):
+    svc, api, engine = rbot
+    v1 = revisable_run(sessions, assets)
+    svc.tick()
+    api.say("اصلاح 1 لحن هیجانی")
+    svc.tick()
+    with sessions.begin() as s:  # the workflow could not make a new version: same package, next round
+        run = s.get(Run, "pouyan:req:x")
+        run.detail = {**run.detail, "approval_round": 2, "revision_error": "کنترل کیفیت نسخهٔ جدید را نپذیرفت"}
+    svc.tick()
+    assert any("نسخهٔ جدید ساخته نشد" in t and "کنترل کیفیت" in t for t in api.texts())
+    api.press("ok:2")
+    svc.tick()
+    assert {j.package_id for j in jobs(sessions)} == {v1.package_id}
+
+
+def test_no_revise_button_when_none_are_left_or_for_the_simple_workflow(rbot, sessions, assets):
+    svc, api, engine = rbot
+    revisable_run(sessions, assets, can_revise=False)
+    svc.tick()
+    assert [cb for _, cb in [m for m in api.out if m.get("buttons")][-1]["buttons"][0]] == ["ok:1", "no:1"]
+    api.say("اصلاح 1 چیزی")
+    svc.tick()
+    assert "دیگر اصلاح ممکن نیست" in api.texts()[-1] and prompt(sessions).state == "pending" and not getattr(engine, "notes", [])
+    api.press("ok:1")
+    svc.tick()
+    assert prompt(sessions).state == "approved"

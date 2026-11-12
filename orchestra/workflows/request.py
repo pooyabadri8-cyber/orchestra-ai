@@ -55,6 +55,8 @@ from .market_close import TOPIC, s_acquire, s_decide, s_finish, s_note, s_reques
 WORKFLOW = "handle_request@1"
 MAX_WRITES = 2
 MAX_STALE_MESSAGES = 5
+MAX_REVISIONS = 3  # how many times the owner may send one piece of content back
+OWNER_NOTE_MAX = 500
 
 
 def run_id_for(org_id: str, request: str, day: date) -> str:
@@ -273,7 +275,7 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
 
 @DBOS.step()
 def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], chart_points: list[str], destinations: list[list[str]],
-              window_minutes: int, risk: str, versions: dict) -> dict:
+              window_minutes: int, risk: str, versions: dict, version: int = 1, supersedes: str | None = None) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     vc = _vc(verified)
@@ -293,11 +295,63 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
             brand=brand, run_id=run_id, content_class="market_report", post=vc.post, instagram_caption=caption,
             slides=[AssetRef.model_validate(a) for a in assets], claims=vc.claims, data_points=refs,
             destinations=[(d, p) for d, p in destinations], versions=versions, expires_at=now + timedelta(minutes=window_minutes),
-            risk_level=risk, extra_point_ids=frozenset(chart_points))
+            risk_level=risk, extra_point_ids=frozenset(chart_points), version=version, supersedes=supersedes)
         store_package(s, pkg, actor=f"workflow:{run_id}")
         run = s.get(Run, run_id)
-        run.package_id, run.status = pkg.package_id, "awaiting_approval"
+        run.package_id = pkg.package_id  # the workflow marks it as waiting, together with its approval round
     return {"package_id": pkg.package_id, "package_hash": pkg.package_hash}
+
+
+async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, day: str, platforms: list[str], focus: str,
+                   dests: list[list[str]], window_minutes: int, owner_note: str | None, attempts_used: int, *,
+                   version: int, supersedes: str | None) -> dict:
+    """One version of the content: write (with a retry on blocking findings), check, review, design, package.
+    Returns {"pkg", "findings"} or, when no publishable version came out, {"status", "findings", "detail", "why"}."""
+    feedback: list[str] | None = [f"درخواست صاحب رسانه برای نسخهٔ جدید: {owner_note}"] if owner_note else None
+    verified: dict = {}
+    findings: list[dict] = []
+    for attempt in range(attempts_used + 1, attempts_used + MAX_WRITES + 1):
+        try:
+            written = await q_write(org_id, run_id, report, day, platforms, focus, feedback, attempt)
+        except Exception as e:
+            return {"status": "failed", "detail": {"error": f"write: {e}"}, "why": f"نویسنده: {e}"}
+        if "error" in written:
+            return {"status": "failed", "detail": {"error": written["error"]}, "why": written["error"]}
+        verified = s_check(org_id, report, written["draft"], platforms)
+        findings = list(verified["findings"])
+        if not verified["blocked"]:
+            if plan.has("edit"):
+                findings += await s_review(org_id, run_id, report, verified, attempt, "editor")
+            if plan.has("comply"):
+                findings += await s_review(org_id, run_id, report, verified, attempt, "compliance")
+        blocking = [f["message"] for f in findings if f["severity"] == "block"]
+        if not blocking and not verified["blocked"]:
+            break
+        feedback = [*([feedback[0]] if owner_note and feedback else []), *(blocking or ["متن همهٔ کانال‌ها کامل نبود"])]
+    else:
+        blocking = [f["message"] for f in findings if f["severity"] == "block"]
+        return {"status": "blocked", "findings": findings, "why": "کنترل کیفیت نسخهٔ جدید را نپذیرفت: " + "؛ ".join(blocking[:3])}
+
+    assets: list[dict] = []
+    chart_points: list[str] = []
+    if plan.has("design"):
+        designed = await s_design(org_id, run_id, verified)
+        if "error" in designed:
+            return {"status": "blocked", "findings": findings, "detail": {"error": f"design: {designed['error']}"},
+                    "why": f"طراح: {designed['error']}"}
+        assets, chart_points = designed["assets"], designed["chart_points"]
+
+    risk = "medium" if any(f["severity"] == "warn" for f in findings) else "low"
+    versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,
+                "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
+                "technical": TECH_V, "fundamental": FUND_V}
+    try:
+        pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions, version, supersedes)
+    except Exception as e:  # noqa: BLE001  e.g. the earlier version is already on a channel
+        if supersedes is None:
+            raise
+        return {"status": "blocked", "findings": findings, "why": f"بسته‌بندی: {e}"}
+    return {"pkg": {**pkg, "version": version}, "findings": findings}
 
 
 # ------------------------------------------------------------------ the workflow
@@ -358,57 +412,45 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
             parts.append(out["part"])
     report = s_compose(snapshot_id or "imports", parts, excluded, day)["report"]
 
-    # ---- writer, fact checker, editor, compliance officer
-    feedback: list[str] | None = None
-    verified: dict = {}
-    findings: list[dict] = []
-    for attempt in range(1, MAX_WRITES + 1):
-        try:
-            written = await q_write(org_id, run_id, report, day, platforms, str(params.get("focus") or ""), feedback, attempt)
-        except Exception as e:
-            return s_finish(run_id, "failed", detail={"error": f"write: {e}"})
-        if "error" in written:
-            return s_finish(run_id, "failed", detail={"error": written["error"]})
-        verified = s_check(org_id, report, written["draft"], platforms)
-        findings = list(verified["findings"])
-        if not verified["blocked"]:
-            if plan.has("edit"):
-                findings += await s_review(org_id, run_id, report, verified, attempt, "editor")
-            if plan.has("comply"):
-                findings += await s_review(org_id, run_id, report, verified, attempt, "compliance")
-        blocking = [f["message"] for f in findings if f["severity"] == "block"]
-        if not blocking and not verified["blocked"]:
-            break
-        feedback = blocking or ["متن همهٔ کانال‌ها کامل نبود"]
-    else:
-        return s_finish(run_id, "blocked", findings=findings)
-
-    # ---- designer
-    assets: list[dict] = []
-    chart_points: list[str] = []
-    if plan.has("design"):
-        designed = await s_design(org_id, run_id, verified)
-        if "error" in designed:
-            return s_finish(run_id, "blocked", findings=findings, detail={"error": f"design: {designed['error']}"})
-        assets, chart_points = designed["assets"], designed["chart_points"]
-
-    # ---- package, approval, publish queue
-    risk = "medium" if any(f["severity"] == "warn" for f in findings) else "low"
-    versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,
-                "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
-                "technical": TECH_V, "fundamental": FUND_V}
-    pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions)
-    s_finish(run_id, "awaiting_approval", findings=findings, detail={"package_id": pkg["package_id"]})
-    await s_request_approval(org_id, run_id, pkg["package_id"], pkg["package_hash"])
-
+    # ---- writer -> checks -> designer -> package -> the owner. The owner may send it back with a note; the team then
+    # makes a new version from the same data. If a new version cannot be made, the last good one keeps waiting.
     dest_ids = [d for d, _ in dests]
-    for _ in range(MAX_STALE_MESSAGES):
-        message = await DBOS.recv_async(TOPIC, timeout_seconds=approval_timeout_s)
-        if message is None:
-            return s_finish(run_id, "expired", detail={"package_id": pkg["package_id"]})
-        if message.get("package_hash") != pkg["package_hash"]:
-            s_note(run_id, f"ignored a decision for another version ({str(message.get('package_hash'))[:12]})")
-            continue
-        result = s_decide(org_id, run_id, pkg["package_id"], pkg["package_hash"], message, dest_ids)
-        return {"run_id": run_id, **result, "package_id": pkg["package_id"]}
+    current: dict | None = None  # the package waiting for a decision
+    owner_note: str | None = None
+    attempts_used = 0
+    for round_no in range(1, MAX_REVISIONS + 2):
+        made = await _produce(org_id, run_id, plan, report, day, platforms, str(params.get("focus") or ""), dests,
+                              window_minutes, owner_note, attempts_used, version=round_no if current is None else current["version"] + 1,
+                              supersedes=None if current is None else current["package_id"])
+        attempts_used += MAX_WRITES
+        can_revise = round_no <= MAX_REVISIONS
+        if "pkg" in made:
+            current = made["pkg"]
+            s_finish(run_id, "awaiting_approval", findings=made["findings"],
+                     detail={"package_id": current["package_id"], "approval_round": round_no, "can_revise": can_revise, "revision_error": None})
+        elif current is None:
+            return s_finish(run_id, made["status"], findings=made.get("findings"), detail=made.get("detail"))
+        else:
+            s_finish(run_id, "awaiting_approval",
+                     detail={"approval_round": round_no, "can_revise": can_revise, "revision_error": made["why"]})
+        await s_request_approval(org_id, run_id, current["package_id"], current["package_hash"])
+
+        for _ in range(MAX_STALE_MESSAGES):
+            message = await DBOS.recv_async(TOPIC, timeout_seconds=approval_timeout_s)
+            if message is None:
+                return s_finish(run_id, "expired", detail={"package_id": current["package_id"]})
+            if message.get("package_hash") != current["package_hash"]:
+                s_note(run_id, f"ignored a decision for another version ({str(message.get('package_hash'))[:12]})")
+                continue
+            if message.get("decision") == "revise":
+                owner_note = " ".join(str(message.get("reason") or "").split())[:OWNER_NOTE_MAX]
+                if can_revise and owner_note:
+                    break
+                s_note(run_id, "ignored a revision request (no note, or no revisions left)")
+                continue
+            result = s_decide(org_id, run_id, current["package_id"], current["package_hash"], message, dest_ids)
+            return {"run_id": run_id, **result, "package_id": current["package_id"]}
+        else:
+            return s_finish(run_id, "expired", detail={"reason": "too many decisions for other versions"})
+        s_finish(run_id, "running", detail={"revising": owner_note})
     return s_finish(run_id, "expired", detail={"reason": "too many decisions for other versions"})
