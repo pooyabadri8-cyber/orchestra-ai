@@ -41,9 +41,9 @@ def groups_flow_chart(points) -> ChartSpec | None:
     bars = []
     for p in points:
         if p.metric == "real_money_net.group.top_in":
-            bars.append(Bar(label=p.subject or "", value=abs(p.value), point_id=p.point_id, display="+" + format_point(p, "abs_money")))
+            bars.append(Bar(label=p.subject or "", value=abs(p.value), point_id=p.point_id, display=format_point(p, "abs_money")))
         elif p.metric == "real_money_net.group.top_out":
-            bars.append(Bar(label=p.subject or "", value=-abs(p.value), point_id=p.point_id, display="−" + format_point(p, "abs_money")))
+            bars.append(Bar(label=p.subject or "", value=-abs(p.value), point_id=p.point_id, display=format_point(p, "abs_money")))
     if len(bars) < 2:
         return None
     unit = next(p.unit for p in points if p.metric.startswith("real_money_net.group"))
@@ -65,3 +65,4 @@ def price_trend_chart(bars, *, subject: str, snapshot_id: str, price_unit: str, 
                      dates=tuple(b.day.isoformat() for b in bars[cut:]),
                      series={k: tuple(None if v is None else float(v) for v in vals[cut:]) for k, vals in series.items()},
                      sources=(snapshot_id,))
+

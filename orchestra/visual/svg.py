@@ -31,6 +31,8 @@ def render_svg(spec: ChartSpec, colors: BrandColors) -> str:
 
 
 def bar_signed(spec: ChartSpec, c: BrandColors) -> str:
+    """Inflow bars go right in green, outflow bars go left in red; the amounts carry no sign (a '+' or '−' next to
+    Persian digits is laid out inconsistently in right-to-left text and was misread, e.g. '+۷۰' as '۷۰۰')."""
     n = len(spec.bars)
     row, top = 78, 20
     h = top + n * row + 10
