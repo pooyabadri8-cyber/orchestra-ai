@@ -39,6 +39,9 @@ def build_text_package(
     return PublicationPackage.build(content)
 
 
+ALBUM_CAPTION_LIMIT = 1024  # Telegram's caption limit (Bale's is the same or larger)
+
+
 def build_multichannel_package(
     *, brand: Brand, run_id: str, content_class: str, post: PostParts | None, instagram_caption: str | None,
     slides: list, claims: list[Claim], data_points: list[DataPointRef], destinations: list[tuple[str, str]], versions: dict,
@@ -48,11 +51,19 @@ def build_multichannel_package(
     """One package for every channel. Telegram and Bale get the text post; Instagram gets the carousel with its caption.
     `slides`: AssetRef list (already stored, in order). Everything each destination will receive is in the hash."""
     plans = []
-    for dest_id, platform in destinations:
-        if platform == "instagram":
+    for dest in destinations:
+        dest_id, platform = dest[0], dest[1]
+        content = dest[2] if len(dest) > 2 else ("carousel" if platform == "instagram" else "post")
+        if content == "carousel":
             if not slides or not instagram_caption:
-                raise ValueError("Instagram needs slides and a caption")
-            step = DeliveryStep(mode="carousel", body=instagram_caption, parse_mode="none", asset_ids=tuple(a.asset_id for a in slides))
+                raise ValueError(f"{dest_id} needs slides and a caption")
+            ids = tuple(a.asset_id for a in slides)
+            if platform == "instagram":
+                step = DeliveryStep(mode="carousel", body=instagram_caption, parse_mode="none", asset_ids=ids)
+            elif len(instagram_caption) > ALBUM_CAPTION_LIMIT:
+                raise ValueError(f"{dest_id}: the caption is longer than {ALBUM_CAPTION_LIMIT} characters")
+            else:  # Telegram / Bale: the slides as one album, the short caption under it
+                step = DeliveryStep(mode="album", body=instagram_caption, parse_mode="none", asset_ids=ids[:10])
         elif post is None:
             raise ValueError(f"{platform} needs the text post")
         elif platform == "telegram":

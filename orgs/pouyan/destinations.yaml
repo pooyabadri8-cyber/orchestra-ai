@@ -5,6 +5,11 @@ destinations:
     platform: telegram
     chat_id: "-1004403985461"         # private test channel (numeric id)
     secret_env: TELEGRAM_TEST_BOT_TOKEN
+  - id: tg_test_slides               # the same test channel also gets the slides as an album
+    platform: telegram
+    content: carousel
+    chat_id: "-1004403985461"
+    secret_env: TELEGRAM_TEST_BOT_TOKEN
   - id: bale_test
     platform: bale
     chat_id: "@your_test_channel_bale"

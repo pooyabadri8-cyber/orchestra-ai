@@ -27,7 +27,7 @@ def test_cli_prepares_a_fresh_database(tmp_path, monkeypatch):
     monkeypatch.setenv("ORCHESTRA_ORGS_DIR", str(tmp_path / "orgs"))
     cfg = load_settings()
     cli._ensure_ready(cfg, "pouyan")  # no `init` was run before
-    assert cli._destinations(cfg, "pouyan") == [["tg_test", "telegram"]]
+    assert cli._destinations(cfg, "pouyan") == [["tg_test", "telegram", "post"]]
 
 
 # ---------------------------------------------------------------- LLM settings and re-runs
@@ -138,3 +138,19 @@ def test_openai_compatible_asks_for_room_for_hidden_reasoning():
             200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {}}))
         asyncio.run(OpenAICompatibleProvider("k", "https://llm.example/v1/").complete("m", "s", "u", 800))
         assert _json.loads(route.calls[0].request.content)["max_tokens"] >= 8192
+
+
+def test_an_existing_database_gets_the_new_destination_column(tmp_path):
+    import sqlite3
+
+    from orchestra.db import create_schema, make_engine
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)  # the shape a database created before the column existed has
+    con.execute("CREATE TABLE destinations (id VARCHAR(64) PRIMARY KEY, org_id VARCHAR(64), platform VARCHAR(16), "
+                "chat_id VARCHAR(128), secret_env VARCHAR(128), enabled BOOLEAN, created_at VARCHAR)")
+    con.execute("INSERT INTO destinations VALUES ('tg', 'o', 'telegram', '@c', 'X', 1, '2026-01-01')")
+    con.commit()
+    con.close()
+    create_schema(make_engine(f"sqlite:///{path}"))
+    create_schema(make_engine(f"sqlite:///{path}"))  # twice: nothing to add the second time
+    assert sqlite3.connect(path).execute("select content from destinations").fetchone() == ("post",)

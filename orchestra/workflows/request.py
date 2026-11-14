@@ -336,7 +336,7 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
         pkg = build_multichannel_package(
             brand=brand, run_id=run_id, content_class="market_report", post=vc.post, instagram_caption=caption,
             slides=[AssetRef.model_validate(a) for a in assets], claims=vc.claims, data_points=refs,
-            destinations=[(d, p) for d, p in destinations], versions=versions, expires_at=now + timedelta(minutes=window_minutes),
+            destinations=[tuple(d) for d in destinations], versions=versions, expires_at=now + timedelta(minutes=window_minutes),
             risk_level=risk, extra_point_ids=frozenset(chart_points), version=version, supersedes=supersedes)
         store_package(s, pkg, actor=f"workflow:{run_id}")
         run = s.get(Run, run_id)
@@ -414,7 +414,8 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
                          approval_timeout_s: int = 3 * 3600, window_minutes: int = 240) -> dict[str, Any]:
     run_id = DBOS.workflow_id
     s_open(run_id, org_id, request)
-    available = sorted({p for _, p in destinations})
+    destinations = [[*d, "carousel" if d[1] == "instagram" else "post"][:3] if len(d) == 2 else list(d) for d in destinations]
+    available = sorted({d[1] for d in destinations})
     try:
         planned = await s_plan(org_id, run_id, request, day_iso, available)
     except Exception as e:
@@ -426,7 +427,9 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
     params = plan.params
     day = str(params.get("day") or day_iso)
     platforms = list(params.get("platforms") or available)
-    dests = [[d, p] for d, p in destinations if p in platforms]
+    dests = [d for d in destinations if d[1] in platforms]
+    if any(d[2] == "carousel" for d in dests) and "instagram" not in platforms:
+        platforms = [*platforms, "instagram"]  # the slides (and their short caption) are needed for an album
 
     # ---- data and analysts
     parts: list[dict] = []
@@ -476,7 +479,7 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
 
     # ---- writer -> checks -> designer -> package -> the owner. The owner may send it back with a note; the team then
     # makes a new version from the same data. If a new version cannot be made, the last good one keeps waiting.
-    dest_ids = [d for d, _ in dests]
+    dest_ids = [d[0] for d in dests]
     current: dict | None = None  # the package waiting for a decision
     owner_note: str | None = None
     attempts_used = 0

@@ -6,6 +6,7 @@ The owner writes a request in the chat, is shown the content with buttons, appro
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -85,6 +86,11 @@ def wait_for(what, svc: Service, timeout: float = 120):
                          + "\n".join(f"{m['token']} {m['method']} {str(m.get('text', ''))[:80]}" for m in sent()))
 
 
+def posts(token: str) -> int:
+    """Messages a channel bot sent: the post (sendMessage) and the slide album (sendMediaGroup) are separate."""
+    return len(sent(token, "sendMessage"))
+
+
 def control_texts() -> list[str]:
     return [m.get("text", "") for m in sent("CTRL") if m["method"] in ("sendMessage", "editMessageText")]
 
@@ -124,7 +130,7 @@ def test_request_approve_publish_from_the_phone(project, service, platform):  # 
     wait_for(lambda: any("باز نیست" in t for t in control_texts()), service)
     say("/status")
     wait_for(lambda: any("تأیید شد" in t and "انتشار فعال" in t for t in control_texts()), service)
-    assert len(sent("TGCHAN")) == 1 and len(sent("BLCHAN")) == 1
+    assert posts("TGCHAN") == 1 and len(sent("TGCHAN", "sendMediaGroup")) == 1 and posts("BLCHAN") == 1
 
     # restart: old messages are not handled again, nothing is re-sent, and the bot still answers
     service.stop()
@@ -132,7 +138,7 @@ def test_request_approve_publish_from_the_phone(project, service, platform):  # 
     service.start()
     say("/jobs")
     wait_for(lambda: any("ارسال 1 به" in t for t in control_texts()[-3:]), service)
-    assert len(sent("TGCHAN")) == 1 and len(sent("BLCHAN")) == 1
+    assert posts("TGCHAN") == 1 and len(sent("TGCHAN", "sendMediaGroup")) == 1 and posts("BLCHAN") == 1
     after = [m for m in sent()[before:] if m["method"] != "getMe"]
     assert len(after) == 1, [m.get("text", m["method"])[:60] for m in after]
     assert "Traceback" not in service.output(), service.output()
@@ -200,7 +206,7 @@ def test_killing_the_service_at_random_moments_never_publishes_twice(project, se
             pressed_pid = latest
             time.sleep(rnd.uniform(0.0, 1.5))
         done = sum(("منتشر شد" in t or "نامعلوم" in t or "منتشر نشد" in t) and t.startswith("ارسال") for t in texts)
-        if pressed_pid and done >= 3:
+        if pressed_pid and done >= 4:
             break
         service.stop()
         service.start()
@@ -208,13 +214,14 @@ def test_killing_the_service_at_random_moments_never_publishes_twice(project, se
     else:
         raise AssertionError("never finished.\n" + service.output() + "\n" + "\n".join(control_texts()))
     time.sleep(3)
-    assert len(sent("TGCHAN")) <= 1 and len(sent("BLCHAN")) <= 1, "a channel got the post twice"
+    assert posts("TGCHAN") <= 1 and len(sent("TGCHAN", "sendMediaGroup")) <= 1 and posts("BLCHAN") <= 1, "a channel got something twice"
     out = subprocess.run([sys.executable, "-m", "orchestra.cli", "jobs"], cwd=project, env=env_for(project),
                          capture_output=True, text=True, encoding="utf-8").stdout
-    for dest, token in (("tg_test", "TGCHAN"), ("bale_test", "BLCHAN")):
-        line = next(ln for ln in out.splitlines() if dest in ln)
+    for dest, token, method in (("tg_test", "TGCHAN", "sendMessage"), ("tg_test_slides", "TGCHAN", "sendMediaGroup"),
+                                ("bale_test", "BLCHAN", "sendMessage")):
+        line = next(ln for ln in out.splitlines() if re.search(rf"\b{dest}\b", ln))
         if "confirmed" in line:
-            assert len(sent(token)) == 1, line
+            assert len(sent(token, method)) == 1, line
         else:
             assert "unknown" in line, line  # cut mid-send: a human decides, never an automatic resend
     assert FakeServices.calls.count("writer") <= 4 and FakeServices.calls.count("manager") <= 2, FakeServices.calls
@@ -258,5 +265,5 @@ def test_send_back_with_a_note_then_approve_the_new_version(project, service):  
     press("ok:2")
     wait_for(lambda: sent("TGCHAN", "sendMessage") and sent("BLCHAN", "sendMessage"), service)
     wait_for(lambda: sum("✅ منتشر شد" in t for t in control_texts()) >= 2, service)
-    assert len(sent("TGCHAN")) == 1 and len(sent("BLCHAN")) == 1
+    assert posts("TGCHAN") == 1 and len(sent("TGCHAN", "sendMediaGroup")) == 1 and posts("BLCHAN") == 1
     assert "Traceback" not in service.output(), service.output()

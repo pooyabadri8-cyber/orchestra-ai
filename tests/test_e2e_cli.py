@@ -206,7 +206,7 @@ def test_first_run_on_a_fresh_computer_reaches_approval_and_publishes(project):
     out = cli(project, "publish")
     assert "Traceback" not in out
     jobs = cli(project, "jobs")
-    assert jobs.count("tg_test") == 1 and "ig_test" in jobs and "Traceback" not in jobs
+    assert len(re.findall(r"\btg_test\b", jobs)) == 1 and "ig_test" in jobs and "Traceback" not in jobs
 
     # a third process can still read everything; nothing left half-done
     assert "approved" in cli(project, "show", rid2)
@@ -309,11 +309,15 @@ def test_approve_and_publish_launcher(project):
     assert "لغو شد" in log and not FakeServices.sent
     log = _approve_latest(project, "y")
     assert '"approved"' in log and "Traceback" not in log
-    msgs = [m for m in FakeServices.sent if m["token"] == "TGCHAN"]
-    assert len(msgs) == 1 and msgs[0]["chat_id"] == "-1004403985461" and "شاخص کل" in msgs[0]["text"]
+    msgs = {m["method"]: m for m in FakeServices.sent if m["token"] == "TGCHAN"}
+    assert sorted(msgs) == ["sendMediaGroup", "sendMessage"] and len(FakeServices.sent) == 2
+    assert msgs["sendMessage"]["chat_id"] == msgs["sendMediaGroup"]["chat_id"] == "-1004403985461"
+    assert "شاخص کل" in msgs["sendMessage"]["text"]
+    album = json.loads(msgs["sendMediaGroup"]["media"])
+    assert len(album) >= 3 and "شاخص کل" in album[0]["caption"] and all(msgs["sendMediaGroup"][f"f{i}"] > 20_000 for i in range(len(album)))
     assert all(m["token"] == "TGCHAN" for m in FakeServices.sent)  # bale and instagram have no token: not approved
     jobs = cli(project, "jobs")
-    assert "tg_test" in jobs and "bale_test" not in jobs
+    assert "tg_test" in jobs and "tg_test_slides" in jobs and "bale_test" not in jobs
     assert "هیچ محتوایی منتظر تأیید نیست" in subprocess.run(
         [sys.executable, "scripts/approve_latest.py"], cwd=project, env=env_for(project), input="y\n",
         capture_output=True, text=True, encoding="utf-8", timeout=120).stdout

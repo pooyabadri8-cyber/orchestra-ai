@@ -72,3 +72,4 @@ def test_package_is_immutable():
     pkg = PublicationPackage.build(make_content())
     with pytest.raises(ValidationError):
         pkg.package_hash = "0" * 64
+

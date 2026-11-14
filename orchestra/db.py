@@ -63,6 +63,9 @@ class Destination(Base):
     chat_id: Mapped[str] = mapped_column(String(128))
     secret_env: Mapped[str] = mapped_column(String(128))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # what this channel receives: "post" (the written post) or "carousel" (the slides as an album with the short
+    # caption). Telegram and Bale can take either; one channel can be listed twice to get both.
+    content: Mapped[str] = mapped_column(String(16), default="post", server_default="post")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -299,3 +302,17 @@ def make_sessionmaker(engine: Engine) -> sessionmaker:
 
 def create_schema(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
+
+
+# Columns added after a database may already exist. create_all() makes new tables only, so these are added here.
+_ADDED_COLUMNS = (("destinations", "content", "VARCHAR(16) NOT NULL DEFAULT 'post'"),)
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table, column, ddl in _ADDED_COLUMNS:
+        if insp.has_table(table) and column not in {c["name"] for c in insp.get_columns(table)}:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))

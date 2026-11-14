@@ -140,7 +140,7 @@ def _destinations(cfg: Settings, org: str) -> list[list[str]]:
         rows = s.execute(select(Destination).where(Destination.org_id == org, Destination.enabled.is_(True))).scalars().all()
     if not rows:
         sys.exit(f"هیچ مقصدی برای {org} نیست؛ اول `init` را بزنید.")
-    return [[d.id, d.platform] for d in rows]
+    return [[d.id, d.platform, d.content or "post"] for d in rows]
 
 
 # ------------------------------------------------------------------ commands
@@ -150,8 +150,12 @@ def _load_destinations(cfg: Settings, org: str, session) -> int:
     path = cfg.orgs_dir / org / "destinations.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     for d in data.get("destinations", []):
+        content = d.get("content", "post")
+        if content not in ("post", "carousel") or (content == "carousel" and d["platform"] not in ("telegram", "bale")):
+            raise KeyError(f"{d['id']}: content باید post باشد، یا carousel برای telegram/bale")
         session.merge(Destination(id=d["id"], org_id=org, platform=d["platform"], chat_id=str(d["chat_id"]),
-                                  secret_env=d["secret_env"], enabled=d.get("enabled", True)))
+                                  secret_env=d["secret_env"], enabled=d.get("enabled", True),
+                                  content="carousel" if d["platform"] == "instagram" else content))
     return len(data.get("destinations", []))
 
 
@@ -186,7 +190,8 @@ def cmd_run(cfg: Settings, a) -> None:
     day = datetime.now(TEHRAN).date() if not a.day else datetime.fromisoformat(a.day).date()
     run_id = wf.run_id_for(a.org, day)
     with SetWorkflowID(run_id):
-        handle = dbos.start_workflow(wf.market_close, a.org, day.isoformat(), _destinations(cfg, a.org),
+        text_only = [[d, p] for d, p, content in _destinations(cfg, a.org) if p != "instagram" and content == "post"]
+        handle = dbos.start_workflow(wf.market_close, a.org, day.isoformat(), text_only,
                                      approval_timeout_s=a.timeout_hours * 3600)
     _wait_and_report(rtm, dbos, run_id, handle)
 
