@@ -90,9 +90,12 @@ class OpenAICompatibleProvider:
     base_url: str
     timeout: float = 120.0
     name: str = "openai_compatible"
+    # "Thinking" models (Gemini 2.5+, o-series ...) spend part of max_tokens on hidden reasoning; a small limit then
+    # cuts the visible answer short. Only the tokens actually used are paid for, so the limit is kept generous.
+    min_output_tokens: int = 8192
 
     async def complete(self, model: str, system: str, user: str, max_tokens: int) -> Completion:
-        body = {"model": model, "max_tokens": max_tokens,
+        body = {"model": model, "max_tokens": max(max_tokens, self.min_output_tokens),
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=CONNECT_TIMEOUT)) as http:
             try:

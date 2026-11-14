@@ -98,7 +98,9 @@ class FakeServices(BaseHTTPRequestHandler):
         if not self.path.endswith("/chat/completions"):
             return self._send(404, b'{"ok": false, "description": "Not Found"}', "application/json")
         req = json.loads(raw)
-        role = {800: "manager", 3500: "writer", 1500: "reviewer"}[req["max_tokens"]]
+        system = req["messages"][0]["content"]
+        role = ("manager" if system.startswith("تو مدیر عملیات") else "writer" if system.startswith("تو نویسندهٔ")
+                else "reviewer")
         FakeServices.calls.append(role)
         FakeServices.prompts.append((role, json.dumps(req.get("messages"), ensure_ascii=False)))
         answer = {"manager": FakeServices.plan, "writer": FakeServices.draft, "reviewer": CLEAN}[role]
@@ -142,6 +144,7 @@ def project(tmp_path):
         "TELEGRAM_TEST_BOT_TOKEN=", "BALE_TEST_BOT_TOKEN=", "INSTAGRAM_TEST_TOKEN=", "",
     ]), encoding="utf-8")
     (work / "data").mkdir()
+    (work / "orgs" / "pouyan" / "schedule.yaml").unlink(missing_ok=True)  # tests must not depend on the time of day
     yield work
     server.shutdown()
 

@@ -309,7 +309,10 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
         refs.append(AssetRef(asset_id=f"slide{im.order}_{sha[:12]}", order=im.order, role="slide", sha256=sha, mime=MIME,
                              bytes=len(im.data), width=im.width, height=im.height, template=TEMPLATE_VERSION,
                              chart_spec_id=im.chart_id).model_dump(mode="json"))
-    return {"assets": refs, "chart_points": sorted({pid for s in vc.slides if s.chart for pid in s.chart.sources})}
+    notes = [f"اسلاید {im.order}: برای جا شدن در تصویر این جمله نیامد (در پست و کپشن هست): «{b}»"
+             for im in images for b in im.manifest.get("dropped", [])]
+    return {"assets": refs, "chart_points": sorted({pid for s in vc.slides if s.chart for pid in s.chart.sources}),
+            "notes": notes}
 
 
 @DBOS.step()
@@ -379,6 +382,7 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
             return {"status": "blocked", "findings": findings, "detail": {"error": f"design: {designed['error']}"},
                     "why": f"طراح: {designed['error']}"}
         assets, chart_points = designed["assets"], designed["chart_points"]
+        findings += [{"severity": "warn", "rule_id": "D-FIT", "message": m, "field": "slides"} for m in designed.get("notes", [])]
 
     risk = "medium" if any(f["severity"] == "warn" for f in findings) else "low"
     versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,

@@ -3,8 +3,10 @@
 - The layout is a versioned HTML/CSS template; the brand kit gives colours, the bundled Vazirmatn font is embedded,
   so the same input renders the same way on any machine.
 - Text on a slide is the verified, already-rendered text; numbers come from tokens, charts from ChartSpecs.
-- Automatic QC: the font must load, nothing may overflow its box (the template first tries smaller type), and the
-  image must have the exact Instagram portrait size. A slide that fails QC stops the run; nothing is guessed.
+- Automatic QC: the font must load, nothing may overflow its box, and the image must have the exact Instagram
+  portrait size. When a slide is too full the template first tries smaller type, then leaves out its last sentences
+  one by one (never cuts a sentence, never adds words; the post and caption keep everything). What was left out is
+  reported to the owner. Only a slide whose title, numbers and chart alone do not fit stops the run.
 - A data manifest per slide lists the claims and chart sources it shows.
 """
 from __future__ import annotations
@@ -13,7 +15,7 @@ import base64
 import hashlib
 import html
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..brand import Brand
@@ -23,7 +25,8 @@ from .svg import render_svg
 TEMPLATE_VERSION = "carousel@2"
 WIDTH, HEIGHT = 1080, 1350
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
-SCALES = (1.0, 0.92, 0.84, 0.76)
+SCALES = (1.0, 0.92, 0.84, 0.76, 0.68)
+READABLE = 3  # the first three sizes are comfortable on a phone; smaller only if leaving out sentences is not enough
 JPEG_QUALITY = 92
 MIME = "image/jpeg"
 
@@ -79,7 +82,7 @@ li{{font-size:calc(36px*var(--s));line-height:1.65;padding-right:34px;position:r
 li::before{{content:"";position:absolute;right:0;top:.72em;width:14px;height:14px;border-radius:50%;background:{c.accent}}}
 .chart{{background:{c.surface};border:2px solid #DCE5EF;border-radius:28px;padding:26px 20px 14px}}
 .chart .ct{{font-weight:700;font-size:28px;color:{c.muted};margin:0 10px 12px}}
-.chart svg{{width:100%;height:auto;display:block}}
+.chart svg{{width:100%;height:auto;max-height:calc(560px*var(--s));display:block}}
 .foot{{position:absolute;bottom:58px;right:80px;left:80px;display:flex;justify-content:space-between;font-size:26px;color:{c.muted}}}
 .end{{justify-content:center;align-items:flex-start}}
 .end h1{{font-size:calc(64px*var(--s))}}
@@ -196,6 +199,17 @@ async def _launch(pw):
     raise RenderError("هیچ مرورگری پیدا نشد. Microsoft Edge یا Chrome را نصب کنید یا ORCHESTRA_BROWSER_PATH را تنظیم کنید. " + " | ".join(errors))
 
 
+def _shorter_versions(slide):
+    """The slide as written, then with its last sentence left out, and so on. A slide with numbers or a chart may
+    end with no sentences; a slide that is only sentences keeps at least one."""
+    yield slide
+    if slide is None or slide.kind == "cover":
+        return
+    keep_min = 0 if (slide.stats or slide.chart is not None) else 1
+    for k in range(len(slide.bullets) - 1, keep_min - 1, -1):
+        yield replace(slide, bullets=tuple(slide.bullets[:k]))
+
+
 async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> list[SlideImage]:
     """Render the verified slides plus the brand's closing slide. `browser`: an open Playwright browser (optional)."""
     if not slides:
@@ -211,24 +225,30 @@ async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> l
     try:
         page = await browser.new_page(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1)
         out = []
-        for n, slide in enumerate(items, 1):
-            doc = slide_html(brand, slide, n, total)
-            for scale in SCALES:
+        for n, original in enumerate(items, 1):
+            fitted, found = None, False
+            # readable type with fewer sentences beats every sentence in small type
+            tries = [(v, sc) for sizes in (SCALES[:READABLE], SCALES[READABLE:]) for v in _shorter_versions(original) for sc in sizes]
+            for slide, scale in tries:
+                doc = slide_html(brand, slide, n, total)
                 await page.set_content(doc.replace("--s:1", f"--s:{scale}"), wait_until="load")
                 qc = await page.evaluate(_QC_JS)
                 if not qc["fontOk"]:
                     raise RenderError("قلم وزیرمتن بارگذاری نشد")
                 if not qc["overflow"]:
+                    fitted, found = slide, True
                     break
-            else:
-                raise RenderError(f"اسلاید {n}: متن در کادر جا نشد ({', '.join(qc['overflow'])}); متن باید کوتاه‌تر شود")
+            if not found:
+                raise RenderError(f"اسلاید {n}: حتی تیتر، عددها و نمودار به‌تنهایی در کادر جا نشدند ({', '.join(qc['overflow'])})")
+            slide = fitted
+            dropped = [] if original is None else list(original.bullets[len(slide.bullets):])
             png = await page.screenshot(type="jpeg", quality=JPEG_QUALITY, full_page=False)  # Instagram takes JPEG only
             w, h = jpeg_size(png)
             if (w, h) != (WIDTH, HEIGHT):
                 raise RenderError(f"اسلاید {n}: اندازهٔ {w}×{h} به‌جای {WIDTH}×{HEIGHT}")
             texts = [] if slide is None else [slide.title, *slide.bullets, *(v for _, v in slide.stats)]
             shown = [c.claim_id for c in claims if any(c.rendered in t for t in texts)]
-            manifest = {"template": TEMPLATE_VERSION, "scale": scale, "claims": shown,
+            manifest = {"template": TEMPLATE_VERSION, "scale": scale, "claims": shown, "dropped": dropped,
                         "chart_sources": list(slide.chart.sources) if slide is not None and slide.chart else []}
             out.append(SlideImage(order=n, data=png, width=w, height=h, sha256=hashlib.sha256(png).hexdigest(),
                                   kind="end" if slide is None else slide.kind,

@@ -41,9 +41,25 @@ def test_carousel_renders_at_instagram_size_with_closing_slide():
     assert imgs[1].manifest["chart_sources"] == ["a", "b"] and imgs[1].chart_id == "groups_flow"
 
 
-def test_text_that_cannot_fit_stops_the_run():
-    long = "این یک جملهٔ بسیار طولانی است که برای پر کردن اسلاید تکرار می‌شود " * 6
+def test_a_slide_whose_title_numbers_and_chart_alone_do_not_fit_stops_the_run():
+    long = "این یک تیتر بسیار طولانی است که برای پر کردن اسلاید تکرار می‌شود " * 8
     slides = [RenderedSlide(title="جلد", bullets=(), stats=(), kind="cover"),
-              RenderedSlide(title="شلوغ", bullets=(long, long, long), stats=(("الف", "۱"),) * 4, chart=LINE)]
-    with pytest.raises(RenderError, match="جا نشد"):
+              RenderedSlide(title=long, bullets=("جمله",), stats=(("الف", "۱"),) * 4, chart=LINE)]
+    with pytest.raises(RenderError, match="جا نشدند"):
         asyncio.run(render_carousel(BRAND, slides))
+
+
+def test_a_full_slide_leaves_out_its_last_sentences_instead_of_stopping():
+    import asyncio
+
+    from orchestra.agents.multichannel import RenderedSlide
+    from orchestra.visual.render import render_carousel
+    long = "این جمله برای پر کردن اسلاید است و چند کلمهٔ اضافه دارد تا جای زیادی بگیرد."
+    full = RenderedSlide(title="بررسی تکنیکال شاخص کل", bullets=tuple(f"{i}. {long}" for i in range(1, 7)),
+                         stats=(("حمایت اول", "۸٬۱۲۰٬۴۵۰"), ("مقاومت اول", "۸٬۶۰۵٬۲۲۰")), chart=LINE)
+    cover = RenderedSlide(title="گزارش بازار", bullets=("زیرتیتر",), stats=(), kind="cover")
+    images = asyncio.run(render_carousel(BRAND, [cover, full]))
+    m = images[1].manifest
+    assert m["dropped"] and m["scale"] >= 0.68 and len(images) == 3
+    assert all(b.startswith(str(i)) for i, b in enumerate(m["dropped"], 7 - len(m["dropped"])))  # from the end, whole sentences
+    assert images[2].kind == "end" and images[2].manifest["dropped"] == []

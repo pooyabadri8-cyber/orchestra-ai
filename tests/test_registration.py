@@ -123,3 +123,18 @@ def test_ask_accepts_new_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "cmd_ask", lambda cfg, a: seen.update(new=a.new, request=a.request))
     cli.main(["ask", "--new", "سلام"])
     assert seen == {"new": True, "request": "سلام"}
+
+
+def test_openai_compatible_asks_for_room_for_hidden_reasoning():
+    import asyncio
+    import json as _json
+
+    import httpx
+    import respx
+
+    from orchestra.llm import OpenAICompatibleProvider
+    with respx.mock() as router:
+        route = router.post("https://llm.example/v1/chat/completions").mock(return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {}}))
+        asyncio.run(OpenAICompatibleProvider("k", "https://llm.example/v1/").complete("m", "s", "u", 800))
+        assert _json.loads(route.calls[0].request.content)["max_tokens"] >= 8192
