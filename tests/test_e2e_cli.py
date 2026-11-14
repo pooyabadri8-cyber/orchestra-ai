@@ -280,3 +280,40 @@ def test_daily_report_fetches_the_index_history_from_tse_by_itself(project):
     run_id_of(log)
     writer = [p for role, p in FakeServices.prompts if role == "writer"][0]
     assert "تحلیل تکنیکال شاخص کل" in writer and "RSI" in writer
+
+
+def test_editing_destinations_yaml_takes_effect(project):
+    import sqlite3
+    cli(project, "jobs")
+    f = project / "orgs" / "pouyan" / "destinations.yaml"
+    f.write_text(f.read_text(encoding="utf-8").replace('"-1004403985461"', '"-100777"'), encoding="utf-8")
+    cli(project, "jobs")
+    db = sqlite3.connect(project / "data" / "app.db")
+    assert db.execute("select chat_id from destinations where id='tg_test'").fetchone()[0] == "-100777"
+    f.write_text("destinations: [ {id: x", encoding="utf-8")
+    assert "خراب است" in cli(project, "jobs", ok=False)
+
+
+def _approve_latest(work: Path, answer: str) -> str:
+    p = subprocess.run([sys.executable, "scripts/approve_latest.py"], cwd=work, env=env_for(work), input=answer + "\n",
+                       capture_output=True, text=True, encoding="utf-8", timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    return (work / "last_publish.txt").read_text(encoding="utf-8")
+
+
+def test_approve_and_publish_launcher(project):
+    env = (project / ".env").read_text(encoding="utf-8-sig").replace("TELEGRAM_TEST_BOT_TOKEN=", "TELEGRAM_TEST_BOT_TOKEN=TGCHAN")
+    (project / ".env").write_text(env, encoding="utf-8")
+    run_id_of(run_ask(project, "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن"))
+    log = _approve_latest(project, "n")
+    assert "لغو شد" in log and not FakeServices.sent
+    log = _approve_latest(project, "y")
+    assert '"approved"' in log and "Traceback" not in log
+    msgs = [m for m in FakeServices.sent if m["token"] == "TGCHAN"]
+    assert len(msgs) == 1 and msgs[0]["chat_id"] == "-1004403985461" and "شاخص کل" in msgs[0]["text"]
+    assert all(m["token"] == "TGCHAN" for m in FakeServices.sent)  # bale and instagram have no token: not approved
+    jobs = cli(project, "jobs")
+    assert "tg_test" in jobs and "bale_test" not in jobs
+    assert "هیچ محتوایی منتظر تأیید نیست" in subprocess.run(
+        [sys.executable, "scripts/approve_latest.py"], cwd=project, env=env_for(project), input="y\n",
+        capture_output=True, text=True, encoding="utf-8", timeout=120).stdout

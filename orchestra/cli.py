@@ -146,16 +146,33 @@ def _destinations(cfg: Settings, org: str) -> list[list[str]]:
 # ------------------------------------------------------------------ commands
 
 
+def _load_destinations(cfg: Settings, org: str, session) -> int:
+    path = cfg.orgs_dir / org / "destinations.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    for d in data.get("destinations", []):
+        session.merge(Destination(id=d["id"], org_id=org, platform=d["platform"], chat_id=str(d["chat_id"]),
+                                  secret_env=d["secret_env"], enabled=d.get("enabled", True)))
+    return len(data.get("destinations", []))
+
+
+def _sync_destinations(cfg: Settings) -> None:
+    """The YAML file is the source of truth for where content goes. A broken file is reported, never half-applied."""
+    if not cfg.orgs_dir.is_dir():
+        return
+    for org_dir in sorted(p for p in cfg.orgs_dir.iterdir() if (p / "destinations.yaml").is_file()):
+        try:
+            with _sessions(cfg).begin() as s:
+                _load_destinations(cfg, org_dir.name, s)
+        except (yaml.YAMLError, KeyError, TypeError) as e:
+            sys.exit(f"فایل {org_dir / 'destinations.yaml'} خراب است: {e}")
+
+
 def cmd_init(cfg: Settings, a) -> None:
     engine = make_engine(cfg.database_url)
     create_schema(engine)
-    path = cfg.orgs_dir / a.org / "destinations.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     with make_sessionmaker(engine).begin() as s:
-        for d in data.get("destinations", []):
-            s.merge(Destination(id=d["id"], org_id=a.org, platform=d["platform"], chat_id=str(d["chat_id"]),
-                                secret_env=d["secret_env"], enabled=d.get("enabled", True)))
-    print(f"جدول‌ها ساخته شد و {len(data.get('destinations', []))} مقصد برای {a.org} ثبت شد.")
+        n = _load_destinations(cfg, a.org, s)
+    print(f"جدول‌ها ساخته شد و {n} مقصد برای {a.org} ثبت شد.")
 
 
 def cmd_run(cfg: Settings, a) -> None:
@@ -515,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.cmd != "init":
         create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
+        _sync_destinations(cfg)  # edits to orgs/<org>/destinations.yaml take effect on the next command
     actor = f"user:{os.environ.get('USERNAME') or os.environ.get('USER') or 'owner'}"
     if a.cmd == "init":
         cmd_init(cfg, a)
