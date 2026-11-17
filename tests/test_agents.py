@@ -229,3 +229,11 @@ def test_doubt_about_a_number_that_is_not_verified_still_counts(sessions, assets
     rep, vc = _verified(sessions, assets, clock)
     assert not doubts_verified_numbers(ReviewItem(severity="block", quote="رشد ۹۹٬۹۹۹ واحدی", problem="عدد ساختگی"), vc)
     assert not doubts_verified_numbers(ReviewItem(severity="block", quote="پول حقیقی وارد بازار شد", problem="داده نمی‌گوید"), vc)
+
+
+def test_a_stray_letter_is_a_typo_the_writer_must_fix():
+    """Real typo on 2026-11-17: «ص صنایع پیشرو و مقاومتی» as a slide title."""
+    from orchestra.agents.verification import text_rules
+    found = text_rules("ص صنایع پیشرو و مقاومتی", BRAND, "اسلاید ۴")
+    assert [(f.rule_id, f.severity) for f in found] == [("R-TYPO", "block")] and "«ص»" in found[0].message
+    assert text_rules("شاخص کل و صنایع پیشرو؛ ق.م و ه.ش", BRAND) == []

@@ -91,6 +91,10 @@ def rule_checks(parts: PostParts, brand: Brand) -> list[Finding]:
     return out
 
 
+# A Persian letter standing alone as a word (except «و», which is the word "and") is a typo, e.g. «ص صنایع».
+_STRAY_LETTER = re.compile(r"(?<![\w\u200c.])([آابپتثجچحخدذرزژسشصضطظعغفقکگلمنهیئكي])(?![\w\u200c.])")
+
+
 def text_rules(body: str, brand: Brand, where: str = "") -> list[Finding]:
     """Rules every piece of model text must pass, on any channel."""
     out: list[Finding] = []
@@ -107,6 +111,9 @@ def text_rules(body: str, brand: Brand, where: str = "") -> list[Finding]:
         out.append(Finding("R-MARKUP", "block", pre + "تگ HTML در متن نویسنده هست؛ قالب‌بندی فقط کار قالب است", where))
     if any(m in n for m in LEAK_MARKERS):
         out.append(Finding("R-LEAK", "block", pre + "نشانهٔ خروجی خراب مدل در متن هست", where))
+    stray = sorted({m.group(1) for m in _STRAY_LETTER.finditer(body)})
+    if stray:
+        out.append(Finding("R-TYPO", "block", pre + "حرف تنها و بی‌معنی در متن (احتمالاً اشتباه تایپی): " + "، ".join(f"«{x}»" for x in stray), where))
     latin, letters = len(_LATIN.findall(body)), len(_LETTER.findall(body))
     if letters and latin / letters > 0.35:
         out.append(Finding("R-LATIN", "block", pre + "بخش زیادی از متن انگلیسی است", where))
