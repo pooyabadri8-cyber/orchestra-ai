@@ -91,3 +91,19 @@ def test_compose_gives_stable_unique_keys():
     rep = compose("snap", [Part("بازار", [bp("a"), bp("b"), date_point], ["واقعیت یک"]), Part("تکنیکال", [bp("c")], ["واقعیت دو"])])
     assert [p.key for p in rep.points] == ["P1", "P2", "D1", "P3"]
     assert rep.points[3].label.startswith("[تکنیکال]") and rep.facts == ("[بازار] واقعیت یک", "[تکنیکال] واقعیت دو")
+
+
+def test_today_close_is_added_only_when_the_history_has_not_caught_up():
+    from datetime import date
+
+    from orchestra.agents.specialists import with_today
+    from orchestra.analysis.technical import Bar, snapshot
+    bars = [Bar(day=date(2026, 11, d), open=100 + d, high=102 + d, low=99 + d, close=101 + d, volume=1000) for d in range(1, 11)]
+    same, added = with_today(bars, (date(2026, 11, 10), 999.0))
+    assert not added and same == bars
+    out, added = with_today(bars, (date(2026, 11, 11), 105.0))
+    assert added and out[-1].day == date(2026, 11, 11) and out[-1].close == 105.0
+    assert out[-1].open == 111.0 and out[-1].low == 105.0 and out[-1].high == 111.0 and out[-1].volume == 0
+    snap = snapshot(out)
+    assert snap.values["price.close"] == 105.0 and "volume.ratio_20" not in snap.values
+    assert snap.values["pivot.p"] == (bars[-1].high + bars[-1].low + bars[-1].close) / 3  # from the last full day

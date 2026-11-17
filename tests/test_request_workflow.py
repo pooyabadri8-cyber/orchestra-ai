@@ -8,7 +8,7 @@ from dbos import DBOS, SetWorkflowID
 from sqlalchemy import select
 
 import orchestra.workflows.request as wf
-from orchestra.db import DataSnapshot, Destination, LLMCall, PackageRow, PublishJob, Run
+from orchestra.db import DataPointRow, DataSnapshot, Destination, LLMCall, PackageRow, PublishJob, Run
 from orchestra.data.imports import record_import
 from orchestra.llm import Gateway, Route
 from orchestra.runtime import set_runtime
@@ -261,3 +261,42 @@ def test_an_old_history_is_used_but_flagged(engine):
         notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"].startswith("DATA-")]
     assert any("2026-10-20" in n and "به‌روز نیست" in n for n in notes)
     assert "تحلیل تکنیکال شاخص کل" in prov.calls[1]
+
+
+def _run_with_history(engine, history: bytes):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    with rtm.sessions.begin() as s:
+        record_import(s, rtm.assets, source_id=wf.price_source("شاخص کل"), raw=history,
+                      parser="tse_index_financial@1", now=rtm.clock(), label="test")
+    wf_support.TSE_DOWN = True
+    try:
+        rid, handle = start()
+        assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    finally:
+        wf_support.TSE_DOWN = False
+    return rtm, prov, rid
+
+
+def test_the_technical_picture_includes_today_when_tse_has_not_caught_up(engine):
+    from tse_samples import index_financial
+    rtm, prov, rid = _run_with_history(engine, index_financial(end=date(2026, 11, 10), last_close=7_900_000))
+    prompt = prov.calls[1]
+    assert "عدد پایانی امروز" in prompt and "تا چهارشنبه ۲۰ آبان ۱۴۰۵" in prompt
+    with rtm.sessions() as s:
+        today = s.execute(select(DataPointRow).where(DataPointRow.metric == "index.total.value")).scalars().first()
+        close = s.execute(select(DataPointRow).where(DataPointRow.metric == "technical.price.close")).scalars().first()
+        sma = s.execute(select(DataPointRow).where(DataPointRow.metric == "technical.sma.20")).scalars().first()
+        notes = [f["rule_id"] + ": " + f["message"] for f in s.get(Run, rid).findings]
+    assert close is None or close.value == today.value
+    assert today.id in sma.derivation["inputs"]  # every technical figure names today's value as a source
+    assert not any(n.startswith(("DATA-TODAY", "DATA-STALE", "DATA-TECHNICAL")) for n in notes), notes
+
+
+def test_today_is_not_merged_when_the_two_sources_disagree(engine):
+    from tse_samples import index_financial
+    rtm, prov, rid = _run_with_history(engine, index_financial(end=date(2026, 11, 10), last_close=3_000_000))
+    assert "عدد پایانی امروز" not in prov.calls[1] and "تا سه‌شنبه ۱۹ آبان ۱۴۰۵" in prov.calls[1]
+    with rtm.sessions() as s:
+        notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"] == "DATA-TODAY"]
+    assert len(notes) == 1 and "نمی‌خواند" in notes[0]

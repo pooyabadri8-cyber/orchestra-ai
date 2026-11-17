@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..analysis.derived import flow_intensity, fundamental_points, technical_points
 from ..analysis.fundamental import analyze as analyze_fundamentals
+from ..analysis.technical import Bar
 from ..analysis.technical import snapshot as technical_snapshot
 from ..assets import AssetStore
 from ..content.calendar import long_date
@@ -31,6 +32,7 @@ class Part:
     points: list[BoundPoint] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
     charts: list[ChartSpec] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # for the owner, not for the writer
 
 
 def market_part(session: Session, *, snapshot_id: str, brand: Brand, run_date: date, now: datetime) -> tuple[Part, tuple[str, ...]]:
@@ -51,19 +53,50 @@ def market_part(session: Session, *, snapshot_id: str, brand: Brand, run_date: d
     return Part(title="بازار", points=points, facts=facts, charts=charts), rep.excluded
 
 
+MAX_DAY_GAP = 0.10  # an index never moves this much between two trading days; more means the two sources disagree
+
+
+def with_today(bars: list, today: tuple[date, float] | None) -> tuple[list, bool]:
+    """TSE publishes the day's history some time after the close. If today's closing value is known from the market
+    page and the history ends before today, today is added as the last day: open = the previous close, high/low only
+    as wide as open and close (the day's real range is not known), volume unknown (0)."""
+    if not today or not bars or today[0] <= bars[-1].day or today[1] <= 0:
+        return bars, False
+    prev = bars[-1].close
+    if abs(today[1] / prev - 1) > MAX_DAY_GAP:
+        raise ValueError(f"عدد امروز ({today[1]:,.0f}) با آخرین عدد سابقه ({prev:,.0f}) نمی‌خواند")
+    day = Bar(day=today[0], open=prev, high=max(prev, today[1]), low=min(prev, today[1]), close=today[1], volume=0.0)
+    return [*bars, day], True
+
+
 def technical_part(session: Session, assets: AssetStore, *, history_snapshot_id: str, subject: str, price_unit: str,
-                   now: datetime) -> Part:
+                   now: datetime, today: tuple[date, float, str] | None = None) -> Part:
+    """`today`: (day, closing value, point id) from the market page, used when the history has not caught up."""
     bars = load_bars(session, assets, history_snapshot_id)
+    try:
+        bars, added = with_today(bars, today[:2] if today else None)
+    except ValueError as e:
+        added, mismatch = False, str(e)
+    else:
+        mismatch = None
     snap = technical_snapshot(bars)
-    points = technical_points(session, snap, subject=subject, source_snapshot_id=history_snapshot_id, price_unit=price_unit, as_of=now)
+    points = technical_points(session, snap, subject=subject, source_snapshot_id=history_snapshot_id, price_unit=price_unit,
+                              as_of=now, extra_inputs=(today[2],) if added else ())
     facts = [f"روند {subject} بر پایهٔ میانگین‌های متحرک: {snap.trend}."]
+    part_notes = [mismatch] if mismatch else []
+    if added:
+        facts.append(f"عدد {long_date(today[0])} همان عدد پایانی امروز در گزارش بازار است؛ سطوح پیوت از آخرین روز کامل "
+                     f"سابقه ({long_date(bars[-2].day)}) حساب شده‌اند.")
     facts += [s.text for s in snap.signals]
     if snap.missing:
         facts.append("برخی شاخص‌ها به‌دلیل کوتاه بودن سابقهٔ قیمت محاسبه نشدند؛ دربارهٔ آن‌ها چیزی ننویس.")
     if "pivot.r1" in snap.values and "level.resistance" in snap.values:
         facts.append("سطوح حمایت و مقاومت از قیمت‌های گذشته محاسبه شده‌اند و پیش‌بینی نیستند؛ آن‌ها را «سطح قابل توجه» بنامی، نه هدف قیمتی.")
     charts = [c for c in [price_trend_chart(bars, subject=subject, snapshot_id=history_snapshot_id, price_unit=price_unit)] if c]
-    return Part(title=f"تحلیل تکنیکال {subject} (تا {long_date(snap.as_of)})", points=points, facts=facts, charts=charts)
+    if added:
+        charts = [c.model_copy(update={"sources": (history_snapshot_id, today[2])}) for c in charts]
+    return Part(title=f"تحلیل تکنیکال {subject} (تا {long_date(snap.as_of)})", points=points, facts=facts, charts=charts,
+                notes=part_notes)
 
 
 def fundamental_part(session: Session, assets: AssetStore, *, statements_snapshot_id: str, price: float, price_day: date,

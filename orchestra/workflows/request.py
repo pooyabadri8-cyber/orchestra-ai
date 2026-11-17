@@ -16,6 +16,7 @@ import hashlib
 import json
 from datetime import date, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dbos import DBOS
 from sqlalchemy import select
@@ -191,7 +192,7 @@ async def s_fetch_history(subject: str) -> dict:
 
 
 @DBOS.step()
-def s_technical(subject: str) -> dict:
+def s_technical(subject: str, market_snapshot_id: str | None = None, day_iso: str | None = None) -> dict:
     r = rt()
     subject = tse.canonical_index(subject) or subject
     with r.sessions.begin() as s:
@@ -199,9 +200,26 @@ def s_technical(subject: str) -> dict:
         if sid is None:
             return {"missing": f"سابقهٔ قیمت «{subject}» در دسترس نیست (از TSE دریافت نشد و فایلی هم وارد نشده است)"}
         unit = "point" if "شاخص" in subject else "IRR"
-        part = technical_part(s, r.assets, history_snapshot_id=sid, subject=subject, price_unit=unit, now=r.clock())
-        last_day = load_bars(s, r.assets, sid)[-1].day
-    return {"part": _part_json(part), "last_day": last_day.isoformat()}
+        today = _today_close(s, subject, market_snapshot_id, day_iso)
+        part = technical_part(s, r.assets, history_snapshot_id=sid, subject=subject, price_unit=unit, now=r.clock(), today=today)
+        last_day = max(load_bars(s, r.assets, sid)[-1].day, today[0] if today and not part.notes else date.min)
+    return {"part": _part_json(part), "last_day": last_day.isoformat(), "notes": part.notes}
+
+
+TEHRAN = ZoneInfo("Asia/Tehran")
+TODAY_METRIC = {"شاخص کل": "index.total.value"}  # the market page's closing value for an index we track
+
+
+def _today_close(s, subject: str, market_snapshot_id: str | None, day_iso: str | None):
+    """(day, value, point id) of today's closing value from today's market page, or None."""
+    metric = TODAY_METRIC.get(subject)
+    if not (metric and market_snapshot_id and day_iso):
+        return None
+    row = s.execute(select(DataPointRow).where(DataPointRow.snapshot_id == market_snapshot_id,
+                                                DataPointRow.metric == metric)).scalars().first()
+    if row is None or row.as_of.astimezone(TEHRAN).date().isoformat() != day_iso:
+        return None
+    return (date.fromisoformat(day_iso), row.value, row.id)
 
 
 @DBOS.step()
@@ -461,13 +479,14 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
                 fetched = {"error": f"TSE در دسترس نبود ({type(e).__name__})"}
             if "error" in fetched:
                 data_notes.append(_note("DATA-TSE", f"سابقهٔ {tech_subject} از TSE تازه نشد: {fetched['error'][:200]}"))
-        out = s_technical(tech_subject)
+        out = s_technical(tech_subject, snapshot_id if plan.has("market") else None, day)
         if "missing" in out:
             if asked:
                 return s_finish(run_id, "needs_data", detail={"message": out["missing"]})
             data_notes.append(_note("DATA-TECHNICAL", f"بخش تحلیل تکنیکال اضافه نشد: {out['missing']}"))
         else:
             parts.append(out["part"])
+            data_notes += [_note("DATA-TODAY", f"عدد امروز {tech_subject} به سابقه اضافه نشد: {n}") for n in out.get("notes", [])]
             if out.get("last_day") and (date.fromisoformat(day) - date.fromisoformat(out["last_day"])).days > STALE_HISTORY_DAYS:
                 data_notes.append(_note("DATA-STALE", f"آخرین روز سابقهٔ {tech_subject} {out['last_day']} است؛ تحلیل تکنیکال به‌روز نیست."))
     if plan.has("fundamental"):

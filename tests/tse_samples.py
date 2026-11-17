@@ -5,7 +5,7 @@ import json
 from datetime import date, timedelta
 
 
-def _series(n: int, end: date):
+def _series(n: int, end: date, last_close: float | None = None):
     level, out = 2_500_000.0, []
     days = []
     d = end
@@ -19,12 +19,15 @@ def _series(n: int, end: date):
         h, lo = max(o, c) * 1.003, min(o, c) * 0.997
         out.append((day, o, h, lo, c, 4_000_000_000 + i * 1_000_000))
         level = c
+    if last_close:  # rescale so the newest close is this value
+        k = last_close / out[-1][4]
+        out = [(d, o * k, h * k, lo * k, c * k, v) for d, o, h, lo, c, v in out]
     return out
 
 
-def index_financial(n: int = 260, end: date = date(2026, 11, 11)) -> bytes:
+def index_financial(n: int = 260, end: date = date(2026, 11, 11), last_close: float | None = None) -> bytes:
     """old.tsetmc.com/tsev2/chart/data/IndexFinancial.aspx: date,high,low,open,close,volume,x;..."""
-    rows = [f"{d:%Y%m%d},{h:.1f},{lo:.1f},{o:.1f},{c:.1f},{v},0" for d, o, h, lo, c, v in _series(n, end)]
+    rows = [f"{d:%Y%m%d},{h:.1f},{lo:.1f},{o:.1f},{c:.1f},{v},0" for d, o, h, lo, c, v in _series(n, end, last_close)]
     return ";".join(rows).encode()
 
 

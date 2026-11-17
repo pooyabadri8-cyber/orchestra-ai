@@ -278,7 +278,7 @@ def snapshot(bars: list[Bar]) -> TechnicalSnapshot:
     k, d = stochastic(bars)
     put("stoch.k", _last(k), 14)
     vol20 = sma([b.volume for b in bars], 20)
-    if _last(vol20):
+    if _last(vol20) and last.volume > 0:  # a day without a known volume (today's close added) gets no ratio
         v["volume.ratio_20"] = last.volume / vol20[-1]  # type: ignore[operator]
     window = bars[-250:]
     v["range.high_250"] = max(b.high for b in window)

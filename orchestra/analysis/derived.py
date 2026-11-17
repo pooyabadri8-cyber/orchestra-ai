@@ -76,13 +76,13 @@ def technical_specs(price_unit: str) -> dict[str, Spec]:
 
 
 def technical_points(session: Session, snap: TechnicalSnapshot, *, subject: str, source_snapshot_id: str,
-                     price_unit: str, as_of: datetime) -> list[BoundPoint]:
+                     price_unit: str, as_of: datetime, extra_inputs: tuple[str, ...] = ()) -> list[BoundPoint]:
     specs = technical_specs(price_unit)
     out = []
     for metric, spec in specs.items():
         if metric in snap.values:
             out.append(store_derived(session, metric=f"technical.{metric}", subject=subject, value=snap.values[metric],
-                                     spec=spec, formula=f"{TECH_V}:{metric}", inputs=[source_snapshot_id], as_of=as_of))
+                                     spec=spec, formula=f"{TECH_V}:{metric}", inputs=[source_snapshot_id, *extra_inputs], as_of=as_of))
     return out
 
 
