@@ -156,10 +156,17 @@ class Unbound:
     start: int
 
 
+# Numbers that are part of a name, not a figure: "طلای ۱۸ عیار", "طلای ۲۴ عیار". Only these exact names pass.
+NAME_NUMBERS = re.compile(r"(?<![0-9۰-۹٠-٩])(?:18|24|۱۸|۲۴|١٨|٢٤)(?=\s*‌?\s*عیار)")
+
+
 def scan(text: str, token_spans: list[tuple[int, int]]) -> list[Unbound]:
-    """Every numeral or written-out figure that is not inside a span produced by a token."""
+    """Every numeral or written-out figure that is not inside a span produced by a token (names such as
+    «۱۸ عیار» excepted)."""
+    names = [(m.start(), m.end()) for m in NAME_NUMBERS.finditer(text)]
+
     def covered(a: int, b: int) -> bool:
-        return any(s <= a and b <= e for s, e in token_spans)
+        return any(s <= a and b <= e for s, e in token_spans) or (a, b) in names
 
     found = []
     for m in NUMERAL.finditer(text):
