@@ -206,3 +206,26 @@ def test_compliance_fails_closed_editor_fails_open(sessions, assets, clock):
     g, _ = gw(sessions, "reviewer", "not json")
     e = asyncio.run(editorial_review(g, BRAND, vc, rep, org_id="pouyan", run_id="c2"))
     assert e[0].severity == "warn"
+
+
+def test_a_reviewer_cannot_block_numbers_that_code_traced_to_a_source(sessions, assets, clock):
+    """Real block on 2026-11-17: compliance called the support/resistance levels 'made up'."""
+    rep, vc = _verified(sessions, assets, clock)
+    tile = next(f"{a}: {b}" for s in vc.slides for a, b in s.stats)  # a verified number as it appears on a slide
+    reply = json.dumps({"findings": [
+        {"severity": "block", "quote": tile, "problem": "این اعداد در داده‌های مرجع نیستند و ساختگی‌اند"},
+        {"severity": "block", "quote": tile, "problem": "سطح به‌عنوان هدف قیمتی آمده است"},  # a real compliance point
+    ]}, ensure_ascii=False)
+    g, prov = gw(sessions, "reviewer", reply)
+    found = asyncio.run(compliance_review(g, BRAND, vc, rep, org_id="pouyan", run_id="c3"))
+    assert [(f.rule_id, f.severity) for f in found] == [("C-COMPLIANCE", "block"), ("C-COMPLIANCE-UNGROUNDED", "warn")]
+    assert "هدف قیمتی" in found[0].message
+    user = prov.calls[0][1]
+    assert "عددهای متن" in user and tile.split(": ")[1] in user  # the reviewer is shown every verified number
+
+
+def test_doubt_about_a_number_that_is_not_verified_still_counts(sessions, assets, clock):
+    from orchestra.agents.reviewers import ReviewItem, doubts_verified_numbers
+    rep, vc = _verified(sessions, assets, clock)
+    assert not doubts_verified_numbers(ReviewItem(severity="block", quote="رشد ۹۹٬۹۹۹ واحدی", problem="عدد ساختگی"), vc)
+    assert not doubts_verified_numbers(ReviewItem(severity="block", quote="پول حقیقی وارد بازار شد", problem="داده نمی‌گوید"), vc)

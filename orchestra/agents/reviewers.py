@@ -22,7 +22,7 @@ from .analysis import AnalysisReport
 from .multichannel import VerifiedContent
 from .verification import Finding
 
-PROMPT_VERSION = "reviewers@1"
+PROMPT_VERSION = "reviewers@2"
 
 
 class ReviewItem(BaseModel):
@@ -78,7 +78,15 @@ def _user(content: VerifiedContent, report: AnalysisReport) -> str:
             lines.append(f"[نمودار: {s.chart.title}]")
         sections.append("\n".join(lines))
     facts = "\n".join(f"- {f}" for f in report.facts)
-    return "واقعیت‌های محاسبه‌شده در کد (مرجع درستی):\n" + facts + "\n\nمتن‌ها:\n\n" + "\n\n".join(sections)
+    labels = {p.key: p.label for p in report.points}
+    seen, numbers = set(), []
+    for c in content.claims:
+        if c.rendered not in seen:
+            seen.add(c.rendered)
+            numbers.append(f"- {c.rendered} ← {labels.get(c.key, c.key)}")
+    return ("واقعیت‌های محاسبه‌شده در کد (مرجع درستی):\n" + facts
+            + "\n\nعددهای متن (هر عدد از دادهٔ معتبر آمده و کد بررسی‌اش کرده است؛ آن‌ها را ساختگی ندان):\n" + "\n".join(numbers)
+            + "\n\nمتن‌ها:\n\n" + "\n\n".join(sections))
 
 
 def _parse(text: str) -> ReviewAnswer:
@@ -95,12 +103,29 @@ def _squash(s: str) -> str:
     return re.sub(r"[\s‌«»\"'.,،:؛!؟?()\-]+", "", normalize(s))
 
 
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+_NUMBER = re.compile(r"[0-9۰-۹٠-٩][0-9۰-۹٠-٩٬,٫.]*")
+_ABOUT_NUMBERS = re.compile(r"عدد|اعداد|رقم|ارقام|داده|ساختگی|منبع|مرجع|تطابق|درستی|نادرست|اشتباه")
+
+
+def _numbers(text: str) -> set[str]:
+    return {re.sub(r"[٬,]", "", m.group()).translate(_DIGITS).replace("٫", ".").rstrip(".") for m in _NUMBER.finditer(text)}
+
+
+def doubts_verified_numbers(item: ReviewItem, content: VerifiedContent) -> bool:
+    """The reviewer questions numbers that code already traced to a source. Number checking is the fact checker's
+    job, done in code; a language model's doubt about them is not a reason to stop (or even flag) the content."""
+    quoted = _numbers(item.quote)
+    verified = set().union(*(_numbers(c.rendered) for c in content.claims)) if content.claims else set()
+    return bool(quoted) and quoted <= verified and bool(_ABOUT_NUMBERS.search(item.problem))
+
+
 def _grounded(items: list[ReviewItem], content: VerifiedContent, prefix: str) -> tuple[list[Finding], int]:
     haystack = _squash(content.all_text())
     out, dropped = [], 0
     for it in items:
         q = _squash(it.quote)
-        if len(q) < 4 or q not in haystack:
+        if len(q) < 4 or q not in haystack or doubts_verified_numbers(it, content):
             dropped += 1
             continue
         out.append(Finding(f"{prefix}", it.severity, f"«{it.quote.strip()[:120]}»: {it.problem.strip()[:300]}"))
@@ -119,7 +144,8 @@ async def _review(gateway: Gateway, brand: Brand, content: VerifiedContent, repo
         return [Finding(f"{prefix}-UNAVAILABLE", sev, f"بررسی {role} انجام نشد: {str(e)[:200]}")]
     findings, dropped = _grounded(ans.findings, content, prefix)
     if dropped:
-        findings.append(Finding(f"{prefix}-UNGROUNDED", "warn", f"{dropped} ایراد {role} به متنی اشاره داشت که در محتوا نبود و کنار گذاشته شد"))
+        findings.append(Finding(f"{prefix}-UNGROUNDED", "warn", f"{dropped} ایراد {role} کنار گذاشته شد (به متنی اشاره داشت "
+                                "که در محتوا نبود، یا درستی عددی را زیر سؤال برده بود که کد از منبعش بررسی کرده است)"))
     return findings
 
 
