@@ -57,6 +57,7 @@ from .market_close import TOPIC, s_acquire, s_decide, s_finish, s_note, s_reques
 
 WORKFLOW = "handle_request@1"
 MAX_WRITES = 2
+ATTEMPTS_PER_VERSION = MAX_WRITES + 1  # + one polishing round on the editor's remarks
 MAX_STALE_MESSAGES = 5
 AUTO_TECHNICAL = "شاخص کل"  # the daily market report always carries the index's technical picture
 AUTO_TECHNICAL_TEMPLATES = ("market_report",)
@@ -333,8 +334,9 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
         refs.append(AssetRef(asset_id=f"slide{im.order}_{sha[:12]}", order=im.order, role="slide", sha256=sha, mime=MIME,
                              bytes=len(im.data), width=im.width, height=im.height, template=TEMPLATE_VERSION,
                              chart_spec_id=im.chart_id).model_dump(mode="json"))
-    notes = [f"اسلاید {im.order}: برای جا شدن در تصویر این جمله نیامد (در پست و کپشن هست): «{b}»"
-             for im in images for b in im.manifest.get("dropped", [])]
+    cut = [(im.order, len(im.manifest.get("dropped", []))) for im in images if im.manifest.get("dropped")]
+    notes = [("اسلاید " + " و ".join(str(o) for o, _ in cut) + f": {sum(n for _, n in cut)} جملهٔ کوتاه برای جا شدن در تصویر "
+              "نیامد (همه در پست و کپشن هست).")] if cut else []
     return {"assets": refs, "chart_points": sorted({pid for s in vc.slides if s.chart for pid in s.chart.sources}),
             "notes": notes}
 
@@ -373,10 +375,12 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
                    version: int, supersedes: str | None) -> dict:
     """One version of the content: write (with a retry on blocking findings), check, review, design, package.
     Returns {"pkg", "findings"} or, when no publishable version came out, {"status", "findings", "detail", "why"}."""
-    feedback: list[str] | None = [f"درخواست صاحب رسانه برای نسخهٔ جدید: {owner_note}"] if owner_note else None
+    note = [f"درخواست صاحب رسانه برای نسخهٔ جدید: {owner_note}"] if owner_note else []
+    feedback: list[str] | None = note or None
     verified: dict = {}
     findings: list[dict] = []
-    for attempt in range(attempts_used + 1, attempts_used + MAX_WRITES + 1):
+    good: tuple[dict, list[dict]] | None = None  # an acceptable draft kept while a polished one is tried
+    for attempt in range(attempts_used + 1, attempts_used + ATTEMPTS_PER_VERSION + 1):
         try:
             written = await q_write(org_id, run_id, report, day, platforms, focus, feedback, attempt)
         except Exception as e:
@@ -392,11 +396,28 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
                 findings += await s_review(org_id, run_id, report, verified, attempt, "compliance")
         blocking = [f["message"] for f in findings if f["severity"] == "block"]
         if not blocking and not verified["blocked"]:
+            # Acceptable. The editor's remarks (vague or illogical sentences, typos) are handed back once, so the
+            # owner gets the polished text instead of a list of warnings; the acceptable draft is kept meanwhile.
+            remarks = [f["message"] for f in findings if f["rule_id"] == "E-EDITOR" and f["severity"] == "warn"]
+            if remarks and good is None and attempt < attempts_used + ATTEMPTS_PER_VERSION:
+                good = (verified, findings)
+                feedback = [*note, *(f"پیش از انتشار این را بهتر کن: {r}" for r in remarks[:6])]
+                continue
+            good = None
             break
-        feedback = [*([feedback[0]] if owner_note and feedback else []), *(blocking or ["متن همهٔ کانال‌ها کامل نبود"])]
+        if good is not None:  # the polished draft is worse: keep the acceptable one
+            verified, findings = good
+            findings = [*findings, _note("E-POLISH", "بازنویسی برای رفع ایرادهای ویراستار پذیرفته نشد؛ همان متن قبلی آماده است.")]
+            break
+        if attempt - attempts_used >= MAX_WRITES:  # rewrites for blocking problems are limited; the extra slot is for polishing
+            return {"status": "blocked", "findings": findings, "why": "کنترل کیفیت نسخهٔ جدید را نپذیرفت: " + "؛ ".join(blocking[:3])}
+        feedback = [*note, *(blocking or ["متن همهٔ کانال‌ها کامل نبود"])]
     else:
-        blocking = [f["message"] for f in findings if f["severity"] == "block"]
-        return {"status": "blocked", "findings": findings, "why": "کنترل کیفیت نسخهٔ جدید را نپذیرفت: " + "؛ ".join(blocking[:3])}
+        if good is not None:
+            verified, findings = good
+        else:
+            blocking = [f["message"] for f in findings if f["severity"] == "block"]
+            return {"status": "blocked", "findings": findings, "why": "کنترل کیفیت نسخهٔ جدید را نپذیرفت: " + "؛ ".join(blocking[:3])}
 
     assets: list[dict] = []
     chart_points: list[str] = []
@@ -514,7 +535,7 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
                               supersedes=None if current is None else current["package_id"])
         if "findings" in made:
             made["findings"] = [*data_notes, *(made["findings"] or [])]
-        attempts_used += MAX_WRITES
+        attempts_used += ATTEMPTS_PER_VERSION
         can_revise = round_no <= MAX_REVISIONS
         if "pkg" in made:
             current = made["pkg"]

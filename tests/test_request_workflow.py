@@ -165,7 +165,7 @@ def test_owner_note_makes_a_new_version_and_only_that_one_can_be_approved(engine
     with rtm.sessions() as s:
         assert s.get(PackageRow, v1.package_id).status == "superseded"
         steps = [c.step_key for c in s.execute(select(LLMCall).order_by(LLMCall.id)).scalars()]
-    assert steps[4:] == ["write.3", "review.editor.3", "review.compliance.3"]  # step keys never repeat
+    assert steps[4:] == ["write.4", "review.editor.4", "review.compliance.4"]  # step keys never repeat
     import time
     for _ in range(100):  # the approval request is sent right after the round becomes visible
         if len(notifier.requests) == 2:
@@ -326,3 +326,32 @@ def test_a_draft_the_checker_cannot_read_is_sent_back_to_the_writer(engine, monk
     rid, handle = start()
     assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=150) == "awaiting_approval"
     assert "ساختار متن قابل بررسی نبود" in prov.calls[2]  # the second writing got the reason
+
+
+# ------------------------------------------------------------------ the editor's remarks are fixed before the owner sees them
+
+WARN = {"findings": [{"severity": "warn", "quote": "پول حقیقی وارد بازار شد", "problem": "جملهٔ کلی؛ بگو چقدر و به کدام گروه‌ها"}]}
+
+
+def test_editor_remarks_get_one_polishing_round(engine):
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, WARN, CLEAN, DRAFT2, CLEAN, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    assert "پیش از انتشار این را بهتر کن" in prov.calls[4] and "کدام گروه‌ها" in prov.calls[4]
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        body = json.loads(s.get(PackageRow, run.package_id).content_json)["destinations"][0]["delivery_plan"][0]["body"]
+    assert not [f for f in run.findings if f["rule_id"] == "E-EDITOR"] and "شاخص کل ۲٫۳۹٪ بالا رفت" in body
+    assert prov.replies == []
+
+
+def test_if_polishing_makes_it_worse_the_acceptable_text_is_kept(engine):
+    block = {"findings": [{"severity": "block", "quote": "پول حقیقی وارد بازار شد", "problem": "تناقض با داده"}]}
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, WARN, CLEAN, DRAFT2, block, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        body = json.loads(s.get(PackageRow, run.package_id).content_json)["destinations"][0]["delivery_plan"][0]["body"]
+    rules = [f["rule_id"] for f in run.findings]
+    assert "E-POLISH" in rules and "E-EDITOR" in rules and "شاخص کل ۲٫۳۹٪ بالا رفت" not in body

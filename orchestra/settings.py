@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_model: str = ""
     llm_fallback_model: str = ""  # optional second model on the same provider
-    llm_max_calls_per_run: int = 20  # manager + writer (with retries) + two reviewers
+    llm_max_calls_per_run: int = 40  # manager + writer (retries, a polishing round, revisions) + two reviewers each
 
     # data sources: a different address for the market page (a mirror, or a local copy for testing)
     bourse_trader_url: str = ""
