@@ -80,10 +80,14 @@ def _runtime(cfg: Settings) -> Runtime:
     market = BourseTraderSource()
     if cfg.bourse_trader_url:
         market.url = cfg.bourse_trader_url
+    from .data.sources.tgju import TgjuSource
+    fx = TgjuSource()
+    if cfg.tgju_url:
+        fx.url = cfg.tgju_url
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
                    gateway=Gateway(sessions, {"writer": routes, "manager": tier(cfg.manager_model), "reviewer": tier(cfg.reviewer_model)},
                                    max_calls_per_run=cfg.llm_max_calls_per_run),
-                   fetcher=http_fetcher(), sources={"bourse_trader": market}, brand_root=cfg.orgs_dir,
+                   fetcher=http_fetcher(), sources={"bourse_trader": market, "tgju": fx}, brand_root=cfg.orgs_dir,
                    tse_old_base=cfg.tse_old_base, tse_cdn_base=cfg.tse_cdn_base)
 
 

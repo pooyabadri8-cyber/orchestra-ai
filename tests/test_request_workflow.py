@@ -355,3 +355,26 @@ def test_if_polishing_makes_it_worse_the_acceptable_text_is_kept(engine):
         body = json.loads(s.get(PackageRow, run.package_id).content_json)["destinations"][0]["delivery_plan"][0]["body"]
     rules = [f["rule_id"] for f in run.findings]
     assert "E-POLISH" in rules and "E-EDITOR" in rules and "شاخص کل ۲٫۳۹٪ بالا رفت" not in body
+
+
+
+def test_daily_report_has_currency_and_gold_and_survives_without_tgju(engine):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    assert "بازار ارز و طلا" in prov.calls[1] and "دلار آمریکا (بازار آزاد) امروز پایین آمد" in prov.calls[1]
+
+
+def test_without_tgju_the_report_still_comes_with_a_note(engine):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    wf_support.TGJU_DOWN = True
+    try:
+        rid, handle = start()
+        assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+    finally:
+        wf_support.TGJU_DOWN = False
+    with rtm.sessions() as s:
+        notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"] == "DATA-FX"]
+    assert len(notes) == 1 and "بخش ارز و طلا اضافه نشد" in notes[0] and "بازار ارز و طلا" not in prov.calls[1]

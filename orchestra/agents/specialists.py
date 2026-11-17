@@ -131,3 +131,41 @@ def compose(snapshot_id: str, parts: list[Part], excluded: tuple[str, ...] = (),
     if len({c.id for c in charts}) != len(charts):
         raise ValueError("duplicate chart ids in composed report")
     return AnalysisReport(snapshot_id=snapshot_id, points=tuple(points), facts=tuple(facts), excluded=excluded, charts=tuple(charts))
+
+
+# ------------------------------------------------------------------ currency and gold
+
+FX_LABELS = {
+    "fx.usd": "دلار آمریکا (بازار آزاد)",
+    "fx.eur": "یورو (بازار آزاد)",
+    "gold.gram18": "طلای ۱۸ عیار (هر گرم)",
+    "coin.emami": "سکهٔ امامی",
+    "gold.ounce": "انس جهانی طلا (دلار)",
+}
+
+
+def fx_part(session: Session, *, snapshot_id: str) -> Part:
+    """The currency and gold analyst: prices and their change today, from one tgju snapshot. The direction of every
+    move is stated in facts computed here, so the writer never has to infer it."""
+    from sqlalchemy import select
+
+    from ..db import DataPointRow
+    rows = {r.metric: r for r in session.execute(select(DataPointRow).where(DataPointRow.snapshot_id == snapshot_id)).scalars()}
+    points: list[BoundPoint] = []
+    facts: list[str] = []
+    for base, label in FX_LABELS.items():
+        price, pct = rows.get(f"{base}.price"), rows.get(f"{base}.change_pct")
+        if price is None:
+            continue
+        price_formats = ("price",) if price.unit in ("IRT", "IRR") else ("num",)
+        points.append(BoundPoint(key="P0", point_id=price.id, metric=price.metric, label=f"قیمت {label}", value=price.value,
+                                 unit=price.unit, decimals=price.decimals, formats=price_formats))
+        if pct is not None:
+            points.append(BoundPoint(key="P0", point_id=pct.id, metric=pct.metric, label=f"درصد تغییر امروز {label}",
+                                     value=pct.value, unit="percent", decimals=2, formats=("abs_pct", "signed_pct")))
+            move = "بالا رفت" if pct.value > 0 else "پایین آمد" if pct.value < 0 else "تغییری نکرد"
+            facts.append(f"{label} امروز {move}.")
+    if points:
+        facts.append("قیمت‌ها لحظه‌ای‌اند و از tgju خوانده شده‌اند؛ آن‌ها را «قیمت بازار آزاد در زمان تهیهٔ گزارش» بنام، "
+                     "نه قیمت پایانی، و دربارهٔ آینده‌شان پیش‌بینی نکن.")
+    return Part(title="بازار ارز و طلا", points=points, facts=facts)

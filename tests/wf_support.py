@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 
 from orchestra.assets import AssetStore
 from orchestra.data.sources.bourse_trader import BourseTraderSource
+from orchestra.data.sources.tgju import TgjuSource
 from orchestra.db import Base, Destination, Run, make_engine, make_sessionmaker
 from orchestra.llm import Completion, Gateway, Route
 from orchestra.runtime import Runtime
@@ -74,6 +75,7 @@ class RecordingNotifier:
 
 
 TSE_DOWN = False  # set by a test to make TSE unreachable
+TGJU_DOWN = False
 
 
 def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, ScriptedProvider, RecordingNotifier]:
@@ -87,6 +89,11 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
     provider, notifier = ScriptedProvider(replies), RecordingNotifier()
 
     async def fetch(url):
+        if "tgju" in url:
+            if TGJU_DOWN:
+                from orchestra.data.acquisition import AcquisitionError
+                raise AcquisitionError("HTTP 404 از tgju", retryable=False)
+            return (Path(__file__).parent / "fixtures" / "tgju_ajax_sample.json").read_bytes()
         if "tsetmc" in url:
             if TSE_DOWN:
                 from orchestra.data.acquisition import AcquisitionError
@@ -98,7 +105,7 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
     runtime = Runtime(
         sessions=sessions, assets=AssetStore(workdir / "assets"),
         gateway=Gateway(sessions, {"writer": [Route(provider, "scripted-model")]}),
-        fetcher=fetch, sources={"bourse_trader": BourseTraderSource()}, brand_root=ROOT / "orgs",
+        fetcher=fetch, sources={"bourse_trader": BourseTraderSource(), "tgju": TgjuSource()}, brand_root=ROOT / "orgs",
         notifier=notifier, clock=lambda: datetime(2026, 11, 11, 13, 0, tzinfo=timezone.utc),
     )
     return runtime, provider, notifier

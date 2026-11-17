@@ -31,7 +31,7 @@ from ..agents.multichannel import (
 )
 from ..agents.reviewers import PROMPT_VERSION as REVIEW_PROMPT
 from ..agents.reviewers import compliance_review, editorial_review
-from ..agents.specialists import Part, compose, fundamental_part, market_part, technical_part
+from ..agents.specialists import Part, compose, fundamental_part, fx_part, market_part, technical_part
 from ..agents.verification import Finding
 from ..agents.writer import WriterError
 from ..analysis.derived import Spec, store_derived
@@ -43,7 +43,7 @@ from ..content.calendar import long_date
 from ..content.numbers import BoundPoint, Claim
 from ..content.package_builder import build_multichannel_package
 from ..content.template import PostParts
-from ..data.acquisition import AcquisitionError
+from ..data.acquisition import AcquisitionError, acquire
 from ..data.imports import load_bars, record_import
 from ..data.sources import tse
 from ..db import DataPointRow, DataSnapshot, Run
@@ -61,6 +61,8 @@ ATTEMPTS_PER_VERSION = MAX_WRITES + 1  # + one polishing round on the editor's r
 MAX_STALE_MESSAGES = 5
 AUTO_TECHNICAL = "شاخص کل"  # the daily market report always carries the index's technical picture
 AUTO_TECHNICAL_TEMPLATES = ("market_report",)
+AUTO_FX_TEMPLATES = ("market_report",)  # the daily report also carries the dollar, gold and coin
+FX_SOURCE = "tgju"
 STALE_HISTORY_DAYS = 6
 MAX_REVISIONS = 3  # how many times the owner may send one piece of content back
 OWNER_NOTE_MAX = 500
@@ -221,6 +223,29 @@ def _today_close(s, subject: str, market_snapshot_id: str | None, day_iso: str |
     if row is None or row.as_of.astimezone(TEHRAN).date().isoformat() != day_iso:
         return None
     return (date.fromisoformat(day_iso), row.value, row.id)
+
+
+@DBOS.step(retries_allowed=True, max_attempts=3, interval_seconds=20, backoff_rate=2)
+async def s_acquire_extra(source_id: str) -> dict:
+    """A second source for the same report (it does not become the run's main snapshot)."""
+    r = rt()
+    if source_id not in r.sources:
+        return {"error": f"منبع «{source_id}» تنظیم نشده است"}
+    try:
+        with r.sessions.begin() as s:
+            got = await acquire(s, r.assets, r.sources[source_id], r.fetcher, r.clock())
+    except AcquisitionError as e:
+        if e.retryable:
+            raise
+        return {"error": str(e)}
+    return {"snapshot_id": got.snapshot_id, "warnings": got.warnings}
+
+
+@DBOS.step()
+def s_fx(snapshot_id: str) -> dict:
+    with rt().sessions.begin() as s:
+        part = fx_part(s, snapshot_id=snapshot_id)
+    return {"part": _part_json(part)} if part.points else {"missing": "قیمتی از tgju خوانده نشد"}
 
 
 @DBOS.step()
@@ -516,6 +541,16 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
             data_notes += [_note("DATA-TODAY", f"عدد امروز {tech_subject} به سابقه اضافه نشد: {n}") for n in out.get("notes", [])]
             if out.get("last_day") and (date.fromisoformat(day) - date.fromisoformat(out["last_day"])).days > STALE_HISTORY_DAYS:
                 data_notes.append(_note("DATA-STALE", f"آخرین روز سابقهٔ {tech_subject} {out['last_day']} است؛ تحلیل تکنیکال به‌روز نیست."))
+    if plan.template_id in AUTO_FX_TEMPLATES:
+        try:
+            got_fx = await s_acquire_extra(FX_SOURCE)
+        except Exception as e:  # noqa: BLE001  tgju unreachable after the retries
+            got_fx = {"error": f"tgju در دسترس نبود ({type(e).__name__})"}
+        fx = s_fx(got_fx["snapshot_id"]) if "snapshot_id" in got_fx else {"missing": got_fx["error"][:200]}
+        if "part" in fx:
+            parts.append(fx["part"])
+        else:
+            data_notes.append(_note("DATA-FX", f"بخش ارز و طلا اضافه نشد: {fx['missing']}"))
     if plan.has("fundamental"):
         out = s_fundamental(params.get("fundamental_subject") or params.get("subject"))
         if "missing" in out:

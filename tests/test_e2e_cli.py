@@ -50,6 +50,8 @@ class FakeServices(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/page":
             self._send(200, PAGE, "text/html; charset=utf-8")
+        elif self.path == "/tgju/ajax.json":
+            self._send(200, (Path(__file__).parent / "fixtures" / "tgju_ajax_sample.json").read_bytes(), "application/json")
         elif self.path.startswith("/tse/tsev2/chart/data/IndexFinancial.aspx") and not FakeServices.tse_down:
             from tse_samples import index_financial
             self._send(200, index_financial(), "text/plain")
@@ -138,6 +140,7 @@ def project(tmp_path):
         "ORCHESTRA_LLM_MODEL=model-a,model-b",
         f"ORCHESTRA_BOURSE_TRADER_URL=http://127.0.0.1:{port}/page",
         f"ORCHESTRA_TSE_OLD_BASE=http://127.0.0.1:{port}/tse",
+        f"ORCHESTRA_TGJU_URL=http://127.0.0.1:{port}/tgju/ajax.json",
         f"ORCHESTRA_TSE_CDN_BASE=http://127.0.0.1:{port}/tse",
         f"ORCHESTRA_TELEGRAM_API_BASE=http://127.0.0.1:{port}/bot",
         f"ORCHESTRA_BALE_API_BASE=http://127.0.0.1:{port}/bot",
@@ -321,3 +324,9 @@ def test_approve_and_publish_launcher(project):
     assert "هیچ محتوایی منتظر تأیید نیست" in subprocess.run(
         [sys.executable, "scripts/approve_latest.py"], cwd=project, env=env_for(project), input="y\n",
         capture_output=True, text=True, encoding="utf-8", timeout=120).stdout
+
+
+def test_daily_report_carries_currency_and_gold(project):
+    run_id_of(run_ask(project, "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن"))
+    writer = [p for role, p in FakeServices.prompts if role == "writer"][0]
+    assert "بازار ارز و طلا" in writer and "۲۶۷٬۹۰۰ تومان" in writer and "سکهٔ امامی" in writer

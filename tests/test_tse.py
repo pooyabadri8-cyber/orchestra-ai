@@ -49,3 +49,15 @@ def test_index_names():
     assert tse.canonical_index("فولاد") is None
     urls = [e.url for e in tse.endpoints("1", "https://a/", "https://b")]
     assert urls == ["https://a/tsev2/chart/data/IndexFinancial.aspx?i=1&t=ph", "https://b/api/Index/GetIndexB2History/1"]
+
+
+def test_real_tse_answers_from_the_users_computer():
+    """Captured on 2026-11-17: the last full day was Sunday 1405/08/25 (2026-11-16)."""
+    from pathlib import Path
+    fx = Path(__file__).parent / "fixtures"
+    fin = tse.parse_index_financial((fx / "tse_index_financial_sample.txt").read_bytes())
+    b2 = tse.parse_index_b2((fx / "tse_index_b2_sample.json").read_bytes())
+    last = fin[-1]
+    assert last.day == date(2026, 11, 16) and (last.open, last.high, last.low, last.close) == (8597230, 8611420, 8513660, 8513669)
+    assert last.volume > 0 and b2[-1].day == date(2026, 11, 16) and abs(b2[-1].close - last.close) < 1
+    assert "rsi.14" in technical_snapshot(fin).values

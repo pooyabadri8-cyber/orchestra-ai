@@ -17,7 +17,7 @@ THOUSANDS, DECIMAL, MINUS = "٬", "٫", "−"
 SCALE_VALUE = {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3, "": 1.0}
 SCALE_WORD = {"T": "همت", "B": "میلیارد تومان", "M": "میلیون تومان", "K": "هزار تومان", "": "تومان"}
 
-FORMATS = ("money", "abs_money", "int", "num", "signed", "pct", "abs_pct", "signed_pct", "name", "rial", "ratio")
+FORMATS = ("money", "abs_money", "int", "num", "signed", "pct", "abs_pct", "signed_pct", "name", "rial", "ratio", "price")
 
 TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*(?:\|\s*([a-z_]+)\s*)?\}\}")
 
@@ -84,6 +84,10 @@ def format_point(p: BoundPoint, fmt: str) -> str:
         if fmt == "money" and p.value < 0:
             return f"{MINUS}{fa_number(shown, decimals)} {SCALE_WORD[scale]}"
         return f"{fa_number(shown, decimals)} {SCALE_WORD[scale]}"
+    if fmt == "price":  # a market price, written in full: «۲۶۷٬۹۰۰ تومان»
+        if p.unit not in ("IRT", "IRR"):
+            raise BindingError(f"{p.key} قیمت تومانی نیست")
+        return f"{fa_number(p.value / 10 if p.unit == 'IRR' else p.value, 0)} تومان"
     if fmt == "rial":
         if p.unit != "IRR":
             raise BindingError(f"{p.key} مبلغ ریالی نیست")
