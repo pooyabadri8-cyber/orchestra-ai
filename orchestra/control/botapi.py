@@ -13,6 +13,7 @@ import httpx
 from ..publishing.adapters import API_BASE
 
 TEXT_LIMIT = 4096
+ALLOWED_UPDATES = ["message", "callback_query"]
 ALBUM_LIMIT = 10
 
 
@@ -54,8 +55,10 @@ class BotApi:
     # ------------------------------------------------------------------ reading
 
     def get_updates(self, offset: int, wait_seconds: int) -> list[dict]:
-        result = self.call("getUpdates", {"offset": offset, "timeout": wait_seconds, "limit": 50},
-                           timeout=wait_seconds + 15)
+        # allowed_updates is always sent: Telegram otherwise keeps whatever the last getUpdates call asked for, and a
+        # list without callback_query (set once by another tool) makes every button silently dead.
+        result = self.call("getUpdates", {"offset": offset, "timeout": wait_seconds, "limit": 50,
+                                          "allowed_updates": json.dumps(ALLOWED_UPDATES)}, timeout=wait_seconds + 15)
         return result if isinstance(result, list) else []
 
     # ------------------------------------------------------------------ writing

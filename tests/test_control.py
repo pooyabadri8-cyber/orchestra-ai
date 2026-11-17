@@ -590,3 +590,19 @@ def test_no_revise_button_when_none_are_left_or_for_the_simple_workflow(rbot, se
     api.press("ok:1")
     svc.tick()
     assert prompt(sessions).state == "approved"
+
+
+def test_every_update_request_asks_for_button_presses():
+    """Real bug on 2026-11-17: an earlier getUpdates call with allowed_updates lacking callback_query made Telegram
+    drop every button press; Telegram keeps that setting until a call names the list again."""
+    import json as _json
+
+    import httpx
+    from urllib.parse import parse_qs
+    sent = []
+
+    def handler(req):
+        sent.append({k: v[0] for k, v in parse_qs(req.content.decode()).items()})
+        return httpx.Response(200, json={"ok": True, "result": []})
+    _api(handler).get_updates(5, 1)
+    assert "callback_query" in _json.loads(sent[0]["allowed_updates"]) and sent[0]["offset"] == "5"

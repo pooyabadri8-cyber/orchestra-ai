@@ -114,15 +114,16 @@ class Bot:
     def wait_for(self, want, io: Io, timeout: int = WAIT_SECONDS):
         """Read new updates until want(update) returns something; old updates are skipped first."""
         offset = 0
-        for u in self.call("getUpdates", offset=-1, timeout=0) or []:
+        kinds = '["message", "callback_query", "channel_post", "my_chat_member"]'  # never leave buttons switched off
+        for u in self.call("getUpdates", offset=-1, timeout=0, allowed_updates=kinds) or []:
             offset = u["update_id"] + 1
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            for u in self.call("getUpdates", offset=offset, timeout=5) or []:
+            for u in self.call("getUpdates", offset=offset, timeout=5, allowed_updates=kinds) or []:
                 offset = u["update_id"] + 1
                 got = want(u)
                 if got:
-                    self.call("getUpdates", offset=offset, timeout=0)  # mark as read
+                    self.call("getUpdates", offset=offset, timeout=0, allowed_updates=kinds)  # mark as read
                     return got
             io.sleep(1)
         return None
