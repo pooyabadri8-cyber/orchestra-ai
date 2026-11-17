@@ -13,3 +13,5 @@ previews/
 *.egg-info/
 last_run.txt
 last_publish.txt
+/captures/
+captures_*.zip

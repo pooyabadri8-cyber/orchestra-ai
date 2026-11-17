@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +38,20 @@ TARGETS = [
     ("tgju_home", "https://www.tgju.org/", "home page"),
     ("tgju_ajax", "https://call1.tgju.org/ajax.json", "candidate: live prices"),
     ("tradersarena_home", "https://tradersarena.ir/", "home page"),
+    # stage 5: currency, gold and coin (tgju), disclosures (codal), market pages (fipiran, tradersarena)
+    ("tgju_dollar_profile", "https://www.tgju.org/profile/price_dollar_rl", "dollar page"),
+    ("tgju_gold18_profile", "https://www.tgju.org/profile/geram18", "18k gold page"),
+    ("tgju_coin_profile", "https://www.tgju.org/profile/sekee", "Emami coin page"),
+    ("tgju_api_dollar", "https://api.tgju.org/v1/market/indicator/summary-table-data/price_dollar_rl", "candidate: dollar history"),
+    ("tgju_ajax_3", "https://call3.tgju.org/ajax.json", "candidate: live prices (mirror)"),
+    ("codal_search_full", "https://search.codal.ir/api/search/v2/q?&Audited=true&AuditorRef=-1&Category=-1&Childs=true"
+     "&CompanyState=-1&CompanyType=-1&Consolidatable=true&IsNotAudited=false&Length=-1&LetterType=-1&Mains=true"
+     "&NotAudited=true&NotConsolidatable=true&PageNumber=1&Publisher=false&TracingNo=-1&search=false", "candidate: latest disclosures"),
+    ("codal_report_list", "https://codal.ir/ReportList.aspx", "disclosures page"),
+    ("fipiran_market", "https://www.fipiran.com/Market", "candidate: market page"),
+    ("tsetmc_inst_effect", "https://cdn.tsetmc.com/api/MarketData/GetInstEffect/0/1/7", "candidate: index effect of stocks"),
+    ("tsetmc_sector_overview", "https://cdn.tsetmc.com/api/ClosingPrice/GetIndustryGroupOverview", "candidate: sectors"),
+    ("tradersarena_industries", "https://tradersarena.ir/industries", "candidate: industries page"),
 ]
 
 HEADERS = {
@@ -56,6 +72,7 @@ def ext_for(content_type: str) -> str:
 
 
 async def main() -> int:
+    os.chdir(Path(__file__).resolve().parent.parent)
     out = Path("captures") / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     index = []
@@ -75,7 +92,12 @@ async def main() -> int:
             index.append(entry)
             await asyncio.sleep(1.0)  # be polite
     (out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nSaved in {out.resolve()}  -> zip this folder and send it.")
+    archive = Path(shutil.make_archive(str(Path.cwd() / f"captures_{out.name}"), "zip", out))
+    ok = sum(1 for e in index if e.get("status") == 200)
+    print(f"\n{ok} of {len(index)} answered. Everything is in one file:\n  {archive}\nAttach this file in the chat with Claude.")
+    if sys.platform == "win32":
+        import subprocess
+        subprocess.run(["explorer", f"/select,{archive}"])  # show the file so it can be dragged into the chat
     return 0
 
 
