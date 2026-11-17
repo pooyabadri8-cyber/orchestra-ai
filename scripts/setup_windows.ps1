@@ -56,9 +56,15 @@ $envText = Get-Content ".env" -Raw -Encoding UTF8
 if ($envText -match "(?m)^ORCHESTRA_CONTROL_BOT_TOKEN=\S+") {
     $answer = Read-Host "ربات کنترل هر بار که وارد ویندوز می‌شوید خودش روشن شود؟ (Enter = بله، n = نه)"
     if ($answer -ne "n") {
+        # The user's Startup folder needs no administrator rights (a logon task in Task Scheduler does).
         $bat = Join-Path (Get-Location) "run_service.bat"
-        schtasks /Create /F /SC ONLOGON /RL LIMITED /TN "ORCHESTRA control bot" /TR "`"$bat`"" | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Host "ثبت شد. برای برداشتن: uninstall_autostart.bat" } else { Write-Host "ثبت نشد؛ run_service.bat را دستی اجرا کنید." -ForegroundColor Yellow }
+        $startup = [Environment]::GetFolderPath("Startup")
+        $launcher = Join-Path $startup "ORCHESTRA control bot.cmd"
+        $text = "@echo off`r`ncd /d `"$(Get-Location)`"`r`nstart `"ORCHESTRA`" /min cmd /c `"$bat`"`r`n"
+        try {
+            [System.IO.File]::WriteAllText($launcher, $text, (New-Object System.Text.ASCIIEncoding))
+            Write-Host "ثبت شد. برای برداشتن: uninstall_autostart.bat"
+        } catch { Write-Host "ثبت نشد؛ run_service.bat را دستی اجرا کنید." -ForegroundColor Yellow }
     }
 } else { Write-Host "ربات کنترل تنظیم نشده؛ این مرحله رد شد." }
 
