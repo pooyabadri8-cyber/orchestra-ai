@@ -31,7 +31,7 @@ from ..agents.multichannel import (
 )
 from ..agents.reviewers import PROMPT_VERSION as REVIEW_PROMPT
 from ..agents.reviewers import compliance_review, editorial_review
-from ..agents.specialists import Part, compose, fundamental_part, fx_part, market_part, technical_part
+from ..agents.specialists import Part, compose, fundamental_part, fx_part, indices_part, market_part, technical_part
 from ..agents.verification import Finding
 from ..agents.writer import WriterError
 from ..analysis.derived import Spec, store_derived
@@ -63,6 +63,8 @@ AUTO_TECHNICAL = "شاخص کل"  # the daily market report always carries the i
 AUTO_TECHNICAL_TEMPLATES = ("market_report",)
 AUTO_FX_TEMPLATES = ("market_report",)  # the daily report also carries the dollar, gold and coin
 FX_SOURCE = "tgju"
+AUTO_INDICES_TEMPLATES = ("market_report",)  # ... and the other indices and the industries' moves, from TSE
+INDICES_SOURCES = ("tse_indices", "tse_farabourse")
 STALE_HISTORY_DAYS = 6
 MAX_REVISIONS = 3  # how many times the owner may send one piece of content back
 OWNER_NOTE_MAX = 500
@@ -246,6 +248,18 @@ def s_fx(snapshot_id: str) -> dict:
     with rt().sessions.begin() as s:
         part = fx_part(s, snapshot_id=snapshot_id)
     return {"part": _part_json(part)} if part.points else {"missing": "قیمتی از tgju خوانده نشد"}
+
+
+@DBOS.step()
+def s_indices(org_id: str, indices_snapshot_id: str | None, fara_snapshot_id: str | None, day_iso: str) -> dict:
+    r = rt()
+    brand = load_brand(org_id, r.brand_root)
+    with r.sessions.begin() as s:
+        part = indices_part(s, indices_snapshot_id=indices_snapshot_id, fara_snapshot_id=fara_snapshot_id, brand=brand,
+                            run_date=date.fromisoformat(day_iso))
+    if not part.points:
+        return {"missing": "؛ ".join(part.notes) or "داده‌ای از TSE خوانده نشد"}
+    return {"part": _part_json(part)}
 
 
 @DBOS.step()
@@ -551,6 +565,25 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
             parts.append(fx["part"])
         else:
             data_notes.append(_note("DATA-FX", f"بخش ارز و طلا اضافه نشد: {fx['missing']}"))
+    if plan.template_id in AUTO_INDICES_TEMPLATES:
+        got: dict[str, str | None] = {}
+        errors = []
+        for source_id in INDICES_SOURCES:
+            try:
+                res = await s_acquire_extra(source_id)
+            except Exception as e:  # noqa: BLE001  TSE unreachable after the retries
+                res = {"error": f"{source_id} در دسترس نبود ({type(e).__name__})"}
+            got[source_id] = res.get("snapshot_id")
+            if "error" in res:
+                errors.append(res["error"][:150])
+        out = s_indices(org_id, got["tse_indices"], got["tse_farabourse"], day) if any(got.values()) else \
+            {"missing": "؛ ".join(errors)}
+        if "part" in out:
+            parts.append(out["part"])
+            if errors:
+                data_notes.append(_note("DATA-INDICES", f"بخشی از شاخص‌های TSE خوانده نشد: {'؛ '.join(errors)}"))
+        else:
+            data_notes.append(_note("DATA-INDICES", f"شاخص‌های فرعی و صنایع اضافه نشدند: {out['missing']}"))
     if plan.has("fundamental"):
         out = s_fundamental(params.get("fundamental_subject") or params.get("subject"))
         if "missing" in out:

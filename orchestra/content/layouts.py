@@ -56,14 +56,19 @@ def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str], *, cover:
     technical = [first[m] for m in ("technical.level.support", "technical.level.resistance", "technical.rsi.14") if m in first]
     stats = [SlotStat("شاخص کل", _tok(index, "int"))]
     if "index.total.change_pct" in first:
-        stats.append(SlotStat("تغییر امروز", _tok(first["index.total.change_pct"], "signed_pct")))
-    if "index.total.change" in first:
+        stats.append(SlotStat("تغییر شاخص کل", _tok(first["index.total.change_pct"], "signed_pct")))
+    others = [(label, first[m]) for m, label in (("index.equal.change_pct", "تغییر شاخص هم‌وزن"),
+                                                 ("index.fara.change_pct", "تغییر شاخص فرابورس")) if m in first]
+    stats += [SlotStat(label, _tok(p, "signed_pct")) for label, p in others]
+    if not others and "index.total.change" in first:
         stats.append(SlotStat("تغییر (واحد)", _tok(first["index.total.change"], "int")))
     trend_here = "price_trend" in chart_ids and not technical
     # without a cover, the day's date goes into the first slide's title
-    index_title = "شاخص کل بورس" if cover or date is None else f"شاخص کل بورس | {_tok(date, 'name')}"
+    index_name = "شاخص‌های بازار" if others else "شاخص کل بورس"
+    index_title = index_name if cover or date is None else f"{index_name} | {_tok(date, 'name')}"
     plan.append(Slot("", index_title, tuple(stats[:2] if trend_here else stats), "price_trend" if trend_here else "",
-                     sentences=1 if trend_here else 2, hint="حرکت شاخص کل امروز و اندازهٔ آن"))
+                     sentences=1 if trend_here else 2,
+                     hint="حرکت شاخص کل" + (" و شاخص‌های هم‌وزن و فرابورس" if others else "") + " امروز و اندازهٔ آن"))
 
     stats = []
     if "retail.trade_value" in first:
@@ -85,6 +90,14 @@ def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str], *, cover:
         chart = "groups_flow" if "groups_flow" in chart_ids else ""
         plan.append(Slot("", "ورود و خروج پول در گروه‌ها", tuple(stats), chart, sentences=1 if chart else 2,
                          hint="کدام گروه‌ها بیشترین ورود و خروج پول حقیقی را داشتند"))
+
+    up, down = first.get("sector.top_up"), first.get("sector.top_down")
+    if up is not None or down is not None:
+        stats = [SlotStat(f"رشد: {p.subject}"[:40], _tok(p, "signed_pct")) for p in (up,) if p is not None]
+        stats += [SlotStat(f"افت: {p.subject}"[:40], _tok(p, "signed_pct")) for p in (down,) if p is not None]
+        chart = "sectors_change" if "sectors_change" in chart_ids else ""
+        plan.append(Slot("", "رشد و افت صنایع", tuple(stats), chart, sentences=1 if chart else 2,
+                         hint="کدام صنایع امروز بیشترین رشد و افت شاخص را داشتند"))
 
     if technical:
         stats = [SlotStat(label, _tok(p)) for label, p in zip(

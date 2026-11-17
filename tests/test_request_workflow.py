@@ -79,7 +79,7 @@ def test_whole_team_to_queued_jobs_on_three_channels(engine):
     plans = {d["platform"]: d["delivery_plan"][0] for d in content["destinations"]}
     assert plans["telegram"]["mode"] == "text" and "۷٬۹۷۶٬۴۰۰" in plans["telegram"]["body"]
     ig = plans["instagram"]
-    assert ig["mode"] == "carousel" and len(ig["asset_ids"]) == 5 and "#کارگزاری_پویان" in ig["body"] and "{{" not in ig["body"]
+    assert ig["mode"] == "carousel" and len(ig["asset_ids"]) == 6 and "#کارگزاری_پویان" in ig["body"] and "{{" not in ig["body"]
     assert all(a["mime"] == "image/jpeg" and (a["width"], a["height"]) == (1080, 1350) for a in content["assets"])
     assert any(a["chart_spec_id"] == "groups_flow" for a in content["assets"])
     metrics = {p["metric"] for p in content["sources"]["data_points"]}

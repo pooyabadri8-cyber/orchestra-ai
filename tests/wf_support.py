@@ -12,6 +12,18 @@ from sqlalchemy import create_engine, text
 from orchestra.assets import AssetStore
 from orchestra.data.sources.bourse_trader import BourseTraderSource
 from orchestra.data.sources.tgju import TgjuSource
+from orchestra.data.sources.tse_live import TseFarabourseSource, TseIndicesSource
+
+
+def tse_live_sample(url: str, day: str = "20261111") -> bytes:
+    """Captured TSE answers; the Farabourse trading day is moved to the test's day."""
+    import json as _json
+    fx = Path(__file__).parent / "fixtures"
+    if "GetIndexB1LastAll" in url:
+        return (fx / "tse_index_b1_sample.json").read_bytes()
+    o = _json.loads((fx / "tse_overview_2_sample.json").read_text(encoding="utf-8"))
+    o["marketOverview"]["marketActivityDEven"] = int(day)
+    return _json.dumps(o).encode()
 from orchestra.db import Base, Destination, Run, make_engine, make_sessionmaker
 from orchestra.llm import Completion, Gateway, Route
 from orchestra.runtime import Runtime
@@ -94,6 +106,11 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
                 from orchestra.data.acquisition import AcquisitionError
                 raise AcquisitionError("HTTP 404 از tgju", retryable=False)
             return (Path(__file__).parent / "fixtures" / "tgju_ajax_sample.json").read_bytes()
+        if "tsetmc" in url and ("GetIndexB1LastAll" in url or "GetMarketOverview" in url):
+            if TSE_DOWN:
+                from orchestra.data.acquisition import AcquisitionError
+                raise AcquisitionError("HTTP 404 از tsetmc", retryable=False)
+            return tse_live_sample(url)
         if "tsetmc" in url:
             if TSE_DOWN:
                 from orchestra.data.acquisition import AcquisitionError
@@ -105,7 +122,8 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
     runtime = Runtime(
         sessions=sessions, assets=AssetStore(workdir / "assets"),
         gateway=Gateway(sessions, {"writer": [Route(provider, "scripted-model")]}),
-        fetcher=fetch, sources={"bourse_trader": BourseTraderSource(), "tgju": TgjuSource()}, brand_root=ROOT / "orgs",
+        fetcher=fetch, sources={"bourse_trader": BourseTraderSource(), "tgju": TgjuSource(),
+                                              "tse_indices": TseIndicesSource(), "tse_farabourse": TseFarabourseSource()}, brand_root=ROOT / "orgs",
         notifier=notifier, clock=lambda: datetime(2026, 11, 11, 13, 0, tzinfo=timezone.utc),
     )
     return runtime, provider, notifier
