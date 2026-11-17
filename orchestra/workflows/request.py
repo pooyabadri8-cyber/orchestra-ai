@@ -298,7 +298,13 @@ def _vc(d: dict) -> VerifiedContent:
 @DBOS.step()
 def s_check(org_id: str, report: dict, draft: dict, platforms: list[str]) -> dict:
     brand = load_brand(org_id, rt().brand_root)
-    vc = verify_multichannel(MultiChannelDraft.model_validate(draft), AnalysisReport.model_validate(report), brand, tuple(platforms))
+    try:
+        vc = verify_multichannel(MultiChannelDraft.model_validate(draft), AnalysisReport.model_validate(report), brand, tuple(platforms))
+    except (ValueError, TypeError) as e:  # pydantic's ValidationError is a ValueError
+        # A draft the checker cannot even read is the writer's to fix, never a reason to stop the run.
+        vc = VerifiedContent(platforms=tuple(platforms), findings=[Finding(
+            rule_id="W-SHAPE", severity="block", field="draft",
+            message=f"ساختار متن قابل بررسی نبود؛ همان شکل خواسته‌شده را رعایت کن ({str(e).splitlines()[0][:160]})")])
     return _vc_json(vc)
 
 

@@ -24,7 +24,7 @@ from ..llm import Gateway
 from ..visual.charts import ChartSpec
 from .analysis import AnalysisReport
 from .verification import Finding, text_rules, verify
-from .writer import Draft, WriterError
+from .writer import MAX_PARAGRAPHS, Draft, WriterError
 from .writer import system_prompt as base_system_prompt
 
 PROMPT_VERSION = "writer.multichannel@1"
@@ -40,7 +40,7 @@ class PostDraft(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     hashtag: str = ""
     headline: str = ""
-    paragraphs: tuple[str, ...] = Field(default=(), max_length=5)
+    paragraphs: tuple[str, ...] = Field(default=(), max_length=MAX_PARAGRAPHS)
     cta: str = ""
 
 

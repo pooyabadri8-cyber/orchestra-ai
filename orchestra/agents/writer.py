@@ -13,6 +13,7 @@ from ..llm import Gateway, LLMError
 from .analysis import AnalysisReport
 
 PROMPT_VERSION = "writer.market_close@1"
+MAX_PARAGRAPHS = 5  # one limit for every post schema (the multichannel writer and the fact checker share it)
 
 
 class Draft(BaseModel):
@@ -21,7 +22,7 @@ class Draft(BaseModel):
     skip_reason: str = ""
     hashtag: str = ""
     headline: str = ""
-    paragraphs: tuple[str, ...] = Field(default=(), max_length=4)
+    paragraphs: tuple[str, ...] = Field(default=(), max_length=MAX_PARAGRAPHS)
     cta: str = ""
 
 

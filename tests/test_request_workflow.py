@@ -300,3 +300,29 @@ def test_today_is_not_merged_when_the_two_sources_disagree(engine):
     with rtm.sessions() as s:
         notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"] == "DATA-TODAY"]
     assert len(notes) == 1 and "نمی‌خواند" in notes[0]
+
+
+def test_a_post_with_five_paragraphs_is_checked_not_crashed(engine):
+    """Real failure on 2026-11-17: Gemini wrote 5 paragraphs; the writer allowed 5, the fact checker only 4."""
+    five = {**DRAFT, "post": {**DRAFT["post"], "paragraphs": [*DRAFT["post"]["paragraphs"], "پاراگراف پنجم بدون عدد."][:5]}}
+    while len(five["post"]["paragraphs"]) < 5:
+        five["post"]["paragraphs"].append("یک جملهٔ دیگر بدون عدد.")
+    rtm, prov, _ = runtime(engine, [PLAN, five, CLEAN, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=90) == "awaiting_approval"
+
+
+def test_a_draft_the_checker_cannot_read_is_sent_back_to_the_writer(engine, monkeypatch):
+    calls = {"n": 0}
+    real = wf.verify_multichannel
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("unexpected shape")
+        return real(*a, **kw)
+    monkeypatch.setattr(wf, "verify_multichannel", flaky)
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, DRAFT, CLEAN, CLEAN])
+    rid, handle = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_data"}, timeout=150) == "awaiting_approval"
+    assert "ساختار متن قابل بررسی نبود" in prov.calls[2]  # the second writing got the reason
