@@ -187,7 +187,11 @@ class ControlService:
             try:
                 self.tick()
             except BotApiError as e:
-                log.warning("به ربات کنترل وصل نشد (%s)؛ چند ثانیهٔ دیگر دوباره تلاش می‌کنم.", e)
+                if e.code == 409 or "Conflict" in str(e):
+                    log.warning("یک برنامهٔ دیگر هم با همین ربات پیام می‌گیرد (روی کامپیوتر دیگر، یا پنجرهٔ دیگری که "
+                                "کوچک شده است). فقط یکی را روشن نگه دارید؛ تا آن موقع پیام‌ها ممکن است به این یکی نرسند.")
+                else:
+                    log.warning("به ربات کنترل وصل نشد (%s)؛ چند ثانیهٔ دیگر دوباره تلاش می‌کنم.", e)
                 time.sleep(10)
             except Exception:  # noqa: BLE001  one bad round must not stop the service
                 log.exception("control round failed")

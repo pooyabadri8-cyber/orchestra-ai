@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from datetime import datetime
@@ -403,6 +404,25 @@ def cmd_publish(cfg: Settings, a) -> None:
     print(json.dumps(results, ensure_ascii=False) if results else "کاری برای ارسال نیست.")
 
 
+def _single_instance(path: Path):
+    """Hold an OS lock for as long as this process lives; None if another process holds it. Two control bots on one
+    token take each other's messages (Telegram answers 'Conflict'), so only one may run."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+")
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f  # kept open: closing it (or the process ending) releases the lock
+
+
 class DbosEngine:
     """The control bot's way to the workflow engine and the publisher (see orchestra.control.service.Engine)."""
 
@@ -474,6 +494,10 @@ def cmd_serve(cfg: Settings, a) -> None:
         schedule = load_schedule(cfg.orgs_dir / a.org / "schedule.yaml")
     except (ValueError, yaml.YAMLError) as e:
         sys.exit(str(e))
+    lock = _single_instance(Path("data") / "control_bot.lock")
+    if lock is None:
+        sys.exit("ربات کنترل همین الان در پنجرهٔ دیگری روشن است (شاید کوچک‌شده در نوار پایین صفحه). "
+                 "یکی کافی است؛ این پنجره را ببندید.")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     for noisy in ("httpx", "httpcore"):  # their INFO lines print full request addresses, which contain bot tokens
         logging.getLogger(noisy).setLevel(logging.WARNING)

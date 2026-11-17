@@ -267,3 +267,13 @@ def test_send_back_with_a_note_then_approve_the_new_version(project, service):  
     wait_for(lambda: sum("✅ منتشر شد" in t for t in control_texts()) >= 2, service)
     assert posts("TGCHAN") == 1 and len(sent("TGCHAN", "sendMediaGroup")) == 1 and posts("BLCHAN") == 1
     assert "Traceback" not in service.output(), service.output()
+
+
+def test_a_second_copy_of_the_bot_refuses_to_start(project, service):  # noqa: F811
+    configure(project, "bale")
+    service.start()
+    wait_for(lambda: "ربات کنترل روشن است" in service.output(), service)
+    p = subprocess.run([sys.executable, "-m", "orchestra.cli", "serve"], cwd=project, env=env_for(project),
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert p.returncode != 0 and "همین الان در پنجرهٔ دیگری روشن است" in p.stdout + p.stderr
+    assert service.proc.poll() is None  # the first one keeps running
