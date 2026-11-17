@@ -35,7 +35,7 @@ DRAFT = {
                           {"label": "ارزش معاملات خرد", "value": "{{P4|money}}"}, {"label": "ورود پول حقیقی", "value": "{{P5|abs_money}}"}]},
                {"title": "پول حقیقی کجا رفت؟", "bullets": ["گروه {{P7|name}} بیشترین ورود را داشت."], "chart": "groups_flow"}],
     # the market report has a fixed slide layout: the writer only adds sentences per slide
-    "slide_text": {"slide3": ["پول حقیقی وارد بازار شد."], "slide4": ["گروه {{P7|name}} بیشترین ورود را داشت."]},
+    "slide_text": {"slide2": ["پول حقیقی وارد بازار شد."], "slide3": ["گروه {{P7|name}} بیشترین ورود را داشت."]},
 }
 CLEAN = {"findings": []}
 
@@ -79,7 +79,7 @@ def test_whole_team_to_queued_jobs_on_three_channels(engine):
     plans = {d["platform"]: d["delivery_plan"][0] for d in content["destinations"]}
     assert plans["telegram"]["mode"] == "text" and "۷٬۹۷۶٬۴۰۰" in plans["telegram"]["body"]
     ig = plans["instagram"]
-    assert ig["mode"] == "carousel" and len(ig["asset_ids"]) == 7 and "#کارگزاری_پویان" in ig["body"] and "{{" not in ig["body"]
+    assert ig["mode"] == "carousel" and len(ig["asset_ids"]) == 5 and "#کارگزاری_پویان" in ig["body"] and "{{" not in ig["body"]
     assert all(a["mime"] == "image/jpeg" and (a["width"], a["height"]) == (1080, 1350) for a in content["assets"])
     assert any(a["chart_spec_id"] == "groups_flow" for a in content["assets"])
     metrics = {p["metric"] for p in content["sources"]["data_points"]}

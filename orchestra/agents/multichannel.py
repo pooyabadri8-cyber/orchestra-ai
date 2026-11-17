@@ -75,8 +75,8 @@ class MultiChannelDraft(BaseModel):
     slide_text: dict[str, tuple[str, ...]] = Field(default_factory=dict)  # fixed layouts: sentences per slide id
 
 
-def layout_for(report: AnalysisReport) -> tuple[Slot, ...] | None:
-    return market_layout(report.points, {c.id for c in report.charts})
+def layout_for(report: AnalysisReport, brand: Brand) -> tuple[Slot, ...] | None:
+    return market_layout(report.points, {c.id for c in report.charts}, cover=brand.template.carousel_cover)
 
 
 def apply_layout(draft: MultiChannelDraft, layout: tuple[Slot, ...]) -> MultiChannelDraft:
@@ -97,18 +97,19 @@ def system_prompt(brand: Brand) -> str:
         "تو برای چند کانال هم‌زمان می‌نویسی و هر کانال سبک خودش را دارد:",
         "- پست تلگرام و بله: تحلیلی و کامل، ۲ تا ۵ بند، هر بند یک ایدهٔ مشخص با عدد پشتیبان.",
         "- کپشن اینستاگرام: کوتاه‌تر و خواناتر، جملهٔ اول قلاب توجه باشد، ۱ تا ۳ بند کوتاه، چند هشتگ موضوعی فارسی.",
-        "- اسلایدهای کاروسل: اسلاید اول جلد است (تیتر کوتاه و یک جملهٔ زیرتیتر)؛ هر اسلاید بعدی یک پیام دارد،",
+        ("- اسلایدهای کاروسل: اسلاید اول جلد است (تیتر کوتاه و یک جملهٔ زیرتیتر)؛ هر اسلاید بعدی یک پیام دارد،"
+         if brand.template.carousel_cover else "- اسلایدهای کاروسل: جلد ندارند و از اسلاید اول محتوا دارند؛ هر اسلاید یک پیام دارد،"),
         "  تیتر حداکثر ۶۰ نویسه، حداکثر ۳ جملهٔ کوتاه، و تا ۴ کاشی عدد (برچسب کوتاه + فقط یک توکن).",
         "  اسلایدی که نمودار دارد جای کمی دارد: حداکثر ۲ کاشی و فقط ۱ جملهٔ کوتاه (زیر ۷۰ نویسه).",
         "هر جمله یک واقعیت مشخص بگوید (نام گروه، جهت، اندازه). جملهٔ کلی و بی‌محتوا ننویس، مثل «سطوح کلیدی بررسی شد» یا "
         "«در سطح مناسبی قرار گرفت»؛ قضاوتی مثل «مناسب» و «خوب» که از داده برنمی‌آید ممنوع است.",
-        "  اسلاید پایانی تماس با کانال را خود قالب اضافه می‌کند؛ تو ننویس.",
+        "  اسلاید پایانی و تماس با ما را ننویس.",
         "مطلب باید کاربردی باشد: بگو چه اتفاقی افتاد، چقدر مهم بود و چه چیزی را باید زیر نظر داشت، بدون توصیهٔ خرید و فروش.",
     ])
 
 
 def user_prompt(report: AnalysisReport, *, date_text: str, platforms: tuple[str, ...], focus: str = "",
-                feedback: list[str] | None = None, layout: tuple[Slot, ...] | None = None) -> str:
+                feedback: list[str] | None = None, layout: tuple[Slot, ...] | None = None, cover: bool = True) -> str:
     rows = []
     for p in report.points:
         examples = "، ".join(f"{{{{{p.key}|{f}}}}} → {format_point(p, f)}" for f in p.formats)
@@ -140,11 +141,11 @@ def user_prompt(report: AnalysisReport, *, date_text: str, platforms: tuple[str,
     if want_ig and layout:
         shape.append(' "slide_text": {' + ", ".join(f'"{s.id}": ["..."]' for s in layout if s.sentences) + '}')
     elif want_ig:
-        shape.append(' "slides": [{"title": "تیتر جلد", "bullets": ["زیرتیتر"]}, {"title": "...", "bullets": ["..."],'
+        shape.append(' "slides": [' + ('{"title": "تیتر جلد", "bullets": ["زیرتیتر"]}, ' if cover else '') + '{"title": "...", "bullets": ["..."],'
                      ' "stats": [{"label": "شاخص کل", "value": "{{P1|int}}"}], "chart": ""}]')
     lines += ["", "خروجی فقط یک شیء JSON باشد، بدون هیچ متن دیگری، به این شکل:", ",\n".join(shape) + "}"]
     if want_ig and not layout:
-        lines.append("۳ تا ۷ اسلاید (با جلد). مقدار هر کاشی دقیقاً یک توکن است و هیچ متن دیگری ندارد.")
+        lines.append(("۳ تا ۷ اسلاید (با جلد)." if cover else "۲ تا ۷ اسلاید، بدون جلد.") + " مقدار هر کاشی دقیقاً یک توکن است و هیچ متن دیگری ندارد.")
     lines.append('اگر داده کافی نیست: {"skip": true, "skip_reason": "..."}')
     return "\n".join(lines)
 
@@ -163,8 +164,9 @@ async def write_multichannel(gateway: Gateway, brand: Brand, report: AnalysisRep
                              date_text: str, platforms: tuple[str, ...], focus: str = "", feedback: list[str] | None = None,
                              step_key: str = "write") -> MultiChannelDraft:
     system = system_prompt(brand)
-    layout = layout_for(report) if "instagram" in platforms or {"telegram", "bale"} & set(platforms) else None
-    user = user_prompt(report, date_text=date_text, platforms=platforms, focus=focus, feedback=feedback, layout=layout)
+    layout = layout_for(report, brand) if "instagram" in platforms or {"telegram", "bale"} & set(platforms) else None
+    user = user_prompt(report, date_text=date_text, platforms=platforms, focus=focus, feedback=feedback, layout=layout,
+                       cover=brand.template.carousel_cover)
     text = await gateway.complete(org_id=org_id, run_id=run_id, step_key=step_key, tier="writer", system=system, user=user, max_tokens=3500)
     try:
         draft = parse_multichannel(text)
@@ -293,8 +295,11 @@ def _check_caption(vc: VerifiedContent, r: _Renderer, draft: MultiChannelDraft, 
 
 def _check_slides(vc: VerifiedContent, r: _Renderer, draft: MultiChannelDraft, report: AnalysisReport, brand: Brand) -> None:
     slides = draft.slides
-    if not 3 <= len(slides) <= 7:
-        vc.findings.append(Finding("R-SHAPE", "block", f"کاروسل باید ۳ تا ۷ اسلاید داشته باشد (اکنون {len(slides)})", "slides"))
+    has_cover = brand.template.carousel_cover
+    least = 3 if has_cover else 2
+    if not least <= len(slides) <= 7:
+        vc.findings.append(Finding("R-SHAPE", "block", f"کاروسل باید {'۳' if has_cover else '۲'} تا ۷ اسلاید داشته باشد "
+                                   f"(اکنون {len(slides)})", "slides"))
         return
     charts = {c.id: c for c in report.charts}
     used: set[str] = set()
@@ -306,7 +311,7 @@ def _check_slides(vc: VerifiedContent, r: _Renderer, draft: MultiChannelDraft, r
         bullets = [r(b, f"{where}.bullet{j}") for j, b in enumerate(s.bullets, 1)]
         stats = []
         for j, st in enumerate(s.stats, 1):
-            if i == 1:
+            if i == 1 and has_cover:
                 vc.findings.append(Finding("R-SHAPE", "block", "اسلاید جلد کاشی عدد ندارد", where))
                 break
             if not TOKEN.fullmatch(st.value.strip()):
@@ -323,7 +328,7 @@ def _check_slides(vc: VerifiedContent, r: _Renderer, draft: MultiChannelDraft, r
                 vc.findings.append(Finding("R-CHART", "block", f"{where}: نمودار «{s.chart}» وجود ندارد", where))
             elif s.chart in used:
                 vc.findings.append(Finding("R-CHART", "block", f"{where}: نمودار «{s.chart}» تکراری است", where))
-            elif i == 1:
+            elif i == 1 and has_cover:
                 vc.findings.append(Finding("R-CHART", "block", "اسلاید جلد نمودار ندارد", where))
             else:
                 chart = charts[s.chart]
@@ -338,12 +343,12 @@ def _check_slides(vc: VerifiedContent, r: _Renderer, draft: MultiChannelDraft, r
         for j, b in enumerate(bullets, 1):
             if len(b) > SLIDE_BULLET_MAX:
                 vc.findings.append(Finding("R-LENGTH", "block", f"{where}: جملهٔ {j} بلندتر از {SLIDE_BULLET_MAX} نویسه است", where))
-        if i > 1 and not bullets and not stats and chart is None:
+        if (i > 1 or not has_cover) and not bullets and not stats and chart is None:
             vc.findings.append(Finding("R-SHAPE", "block", f"{where}: اسلاید محتوا ندارد", where))
         body = "\n".join([title, *bullets, *(a for a, _ in stats)])
         vc.findings += text_rules(body, brand, where)
         out.append(RenderedSlide(title=title.strip().rstrip("."), bullets=tuple(b.strip() for b in bullets), stats=tuple(stats),
-                                 chart=chart, kind="cover" if i == 1 else "content"))
+                                 chart=chart, kind="cover" if i == 1 and has_cover else "content"))
     if ok:
         vc.slides = tuple(out)
 

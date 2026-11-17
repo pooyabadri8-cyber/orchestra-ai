@@ -214,8 +214,8 @@ async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> l
     """Render the verified slides plus the brand's closing slide. `browser`: an open Playwright browser (optional)."""
     if not slides:
         raise RenderError("no slides to render")
-    total = len(slides) + 1
-    items = list(slides) + [None]
+    items = list(slides) + ([None] if brand.template.carousel_end else [])
+    total = len(items)
     own = browser is None
     pw = None
     if own:

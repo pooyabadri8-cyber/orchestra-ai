@@ -30,11 +30,19 @@ def test_svg_is_deterministic_and_escapes_text():
     assert "polyline" in render_svg(LINE, BRAND.colors)
 
 
+WITH_END = BRAND.model_copy(update={"template": BRAND.template.model_copy(update={"carousel_end": True})})
+
+
+def test_pouyan_has_no_closing_slide():
+    slides = [RenderedSlide(title="شاخص", bullets=("شاخص رشد کرد.",), stats=(("شاخص کل", "۲٬۸۷۴٬۵۱۲"),))]
+    assert [i.kind for i in asyncio.run(render_carousel(BRAND, slides))] == ["content"]
+
+
 def test_carousel_renders_at_instagram_size_with_closing_slide():
     slides = [RenderedSlide(title="بازار امروز", bullets=("چهارشنبه",), stats=(), kind="cover"),
               RenderedSlide(title="شاخص", bullets=("شاخص رشد کرد.",), stats=(("شاخص کل", "۲٬۸۷۴٬۵۱۲"),), chart=BARS),
               RenderedSlide(title="روند", bullets=(), stats=(), chart=LINE)]
-    imgs = asyncio.run(render_carousel(BRAND, slides))
+    imgs = asyncio.run(render_carousel(WITH_END, slides))
     assert [i.kind for i in imgs] == ["cover", "content", "content", "end"]
     for im in imgs:
         assert jpeg_size(im.data) == (WIDTH, HEIGHT) and im.sha256 == hashlib.sha256(im.data).hexdigest()
@@ -58,7 +66,7 @@ def test_a_full_slide_leaves_out_its_last_sentences_instead_of_stopping():
     full = RenderedSlide(title="بررسی تکنیکال شاخص کل", bullets=tuple(f"{i}. {long}" for i in range(1, 7)),
                          stats=(("حمایت اول", "۸٬۱۲۰٬۴۵۰"), ("مقاومت اول", "۸٬۶۰۵٬۲۲۰")), chart=LINE)
     cover = RenderedSlide(title="گزارش بازار", bullets=("زیرتیتر",), stats=(), kind="cover")
-    images = asyncio.run(render_carousel(BRAND, [cover, full]))
+    images = asyncio.run(render_carousel(WITH_END, [cover, full]))
     m = images[1].manifest
     assert m["dropped"] and m["scale"] >= 0.68 and len(images) == 3
     assert all(b.startswith(str(i)) for i, b in enumerate(m["dropped"], 7 - len(m["dropped"])))  # from the end, whole sentences

@@ -155,9 +155,9 @@ def test_multichannel_writes_all_channels_from_one_call(sessions, assets, clock)
     vc = verify_multichannel(draft, rep, BRAND, ("telegram", "instagram"))
     assert not vc.blocked, vc.feedback()
     assert vc.caption.hashtags == ("#بورس", "#شاخص_کل")  # cleaned, deduplicated, brand tag added by the template
-    assert vc.slides[0].title == "گزارش پایان بازار" and vc.slides[1].title == "شاخص کل بورس"
+    assert vc.slides[0].title.startswith("شاخص کل بورس | ") and vc.slides[0].kind == "content"  # no cover for Pouyan
     assert any(s.chart and s.chart.id == "groups_flow" for s in vc.slides)
-    assert vc.slides[1].stats[0][1] == next(c.rendered for c in vc.claims if c.fmt == "int")
+    assert vc.slides[0].stats[0][1] == next(c.rendered for c in vc.claims if c.fmt == "int")
     assert "telegram" not in user_prompt(rep, date_text="x", platforms=("telegram",)) or '"slides"' not in user_prompt(rep, date_text="x", platforms=("telegram",))
 
 

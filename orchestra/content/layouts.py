@@ -35,7 +35,7 @@ def _tok(p: BoundPoint, fmt: str | None = None) -> str:
     return f"{{{{{p.key}|{fmt if fmt in p.formats else p.formats[0]}}}}}"
 
 
-def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str]) -> tuple[Slot, ...] | None:
+def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str], *, cover: bool = True) -> tuple[Slot, ...] | None:
     """The market-close carousel. None when the report is not a market report (no index value)."""
     first: dict[str, BoundPoint] = {}
     groups: dict[str, list[BoundPoint]] = {}
@@ -50,7 +50,8 @@ def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str]) -> tuple[
     plan: list[Slot] = []
 
     date = first.get("run.date")
-    plan.append(Slot("cover", COVER_TITLE, bullets=(_tok(date, "name"),) if date else ()))
+    if cover:
+        plan.append(Slot("cover", COVER_TITLE, bullets=(_tok(date, "name"),) if date else ()))
 
     technical = [first[m] for m in ("technical.level.support", "technical.level.resistance", "technical.rsi.14") if m in first]
     stats = [SlotStat("شاخص کل", _tok(index, "int"))]
@@ -59,7 +60,9 @@ def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str]) -> tuple[
     if "index.total.change" in first:
         stats.append(SlotStat("تغییر (واحد)", _tok(first["index.total.change"], "int")))
     trend_here = "price_trend" in chart_ids and not technical
-    plan.append(Slot("", "شاخص کل بورس", tuple(stats[:2] if trend_here else stats), "price_trend" if trend_here else "",
+    # without a cover, the day's date goes into the first slide's title
+    index_title = "شاخص کل بورس" if cover or date is None else f"شاخص کل بورس | {_tok(date, 'name')}"
+    plan.append(Slot("", index_title, tuple(stats[:2] if trend_here else stats), "price_trend" if trend_here else "",
                      sentences=1 if trend_here else 2, hint="حرکت شاخص کل امروز و اندازهٔ آن"))
 
     stats = []
@@ -98,6 +101,6 @@ def market_layout(points: tuple[BoundPoint, ...], chart_ids: set[str]) -> tuple[
         plan.append(Slot("", "دلار، طلا و سکه", tuple(SlotStat(label, _tok(p)) for label, p in fx), sentences=1,
                          hint="جهت حرکت دلار، طلا و سکه امروز (قیمت لحظه‌ای، بدون پیش‌بینی)"))
 
-    if len(plan) < 3:
+    if len(plan) < (3 if cover else 2):
         return None  # too little data for the fixed shape: the writer lays out what there is
     return tuple(Slot(f"slide{i}", s.title, s.stats, s.chart, s.bullets, s.sentences, s.hint) for i, s in enumerate(plan, 1))

@@ -23,6 +23,8 @@ class PostTemplate(BaseModel):
     instagram_cta: str = ""  # Instagram is a page, not a channel; empty = default_cta
     footer_text: str = ""
     footer_links: tuple[FooterLink, ...] = ()
+    carousel_cover: bool = True  # a title-only first slide
+    carousel_end: bool = True  # the closing slide with the call to action and contact links
 
 
 class BrandColors(BaseModel):

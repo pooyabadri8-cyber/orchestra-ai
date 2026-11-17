@@ -45,3 +45,9 @@ def test_writer_only_fills_sentences():
     assert out.slides[1].bullets == ("الف", "ب")  # extra sentences are cut
     assert out.slides[3].bullets == ("ج",) and out.slides[3].chart == "groups_flow"
     assert out.slides[1].stats[0].value == "{{P1|int}}"
+
+
+def test_without_cover_the_date_moves_into_the_first_title():
+    layout = market_layout(POINTS, {"groups_flow"}, cover=False)
+    assert layout[0].id == "slide1" and layout[0].title == "شاخص کل بورس | {{D1|name}}"
+    assert "گزارش پایان بازار" not in [s.title for s in layout]

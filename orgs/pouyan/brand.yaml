@@ -73,6 +73,8 @@ template:
   brand_hashtag: '#کارگزاری_پویان'
   default_topic_hashtag: '#بازار_سرمایه'
   default_cta: برای دیدن تحلیل‌ها و خبرهای بیشتر، کانال را دنبال کنید.
+  carousel_cover: false  # صاحب کار: صفحهٔ اول و آخر کاروسل بلااستفاده‌اند
+  carousel_end: false
   instagram_cta: برای دیدن تحلیل‌ها و خبرهای بیشتر، صفحهٔ ما را دنبال کنید.
   footer_text: نیاز به راهنمایی دارید؟ با تیم ارتباط با مشتریان کارگزاری پویان در ارتباط باشید.
   footer_links:
