@@ -151,11 +151,12 @@ def test_multichannel_writes_all_channels_from_one_call(sessions, assets, clock)
     draft = asyncio.run(write_multichannel(g, BRAND, rep, org_id="pouyan", run_id="w1", date_text="چهارشنبه",
                                            platforms=("telegram", "instagram"), focus="جریان پول"))
     user = prov.calls[0][1]
-    assert "groups_flow" in user and "جریان پول" in user and '"slides"' in user
+    assert "جریان پول" in user and '"slide_text"' in user and '"slides"' not in user  # market report: fixed layout
     vc = verify_multichannel(draft, rep, BRAND, ("telegram", "instagram"))
     assert not vc.blocked, vc.feedback()
     assert vc.caption.hashtags == ("#بورس", "#شاخص_کل")  # cleaned, deduplicated, brand tag added by the template
-    assert [s.kind for s in vc.slides] == ["cover", "content", "content"] and vc.slides[2].chart.id == "groups_flow"
+    assert vc.slides[0].title == "گزارش پایان بازار" and vc.slides[1].title == "شاخص کل بورس"
+    assert any(s.chart and s.chart.id == "groups_flow" for s in vc.slides)
     assert vc.slides[1].stats[0][1] == next(c.rendered for c in vc.claims if c.fmt == "int")
     assert "telegram" not in user_prompt(rep, date_text="x", platforms=("telegram",)) or '"slides"' not in user_prompt(rep, date_text="x", platforms=("telegram",))
 
