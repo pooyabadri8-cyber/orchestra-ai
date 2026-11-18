@@ -427,6 +427,48 @@ def _single_instance(path: Path):
     return f  # kept open: closing it (or the process ending) releases the lock
 
 
+def _take_over(lock_path: Path, pid_path: Path, *, ask=input, kill=None, wait_s: float = 20.0):
+    """Another copy holds the lock (usually the one started at Windows logon, minimised, still running the old code
+    after an update). Offer to stop it and run this one instead; the lock comes back once the old process is gone."""
+    import time
+    try:
+        pid = int(pid_path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    if ask is input and not (sys.stdin and sys.stdin.isatty()):
+        return None  # started by Windows at logon, nobody to ask: the copy already running stays
+    try:
+        answer = ask("ربات کنترل در پنجرهٔ دیگری روشن است (شاید کوچک‌شده در نوار پایین صفحه).\n"
+                     "آن را ببندم و همین را روشن کنم؟ برای کد تازه بعد از به‌روزرسانی لازم است. (Enter = بله، n = نه): ")
+    except EOFError:
+        return None
+    if answer.strip().lower() in ("n", "no", "نه"):
+        return None
+    (kill or _kill)(pid)
+    end = time.monotonic() + wait_s
+    while time.monotonic() < end:
+        lock = _single_instance(lock_path)
+        if lock is not None:
+            print("ربات قبلی بسته شد.")
+            return lock
+        time.sleep(0.5)
+    return None
+
+
+def _kill(pid: int) -> None:
+    import signal
+    import subprocess
+    if os.name == "nt":  # /T: and whatever it started
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
 class DbosEngine:
     """The control bot's way to the workflow engine and the publisher (see orchestra.control.service.Engine)."""
 
@@ -498,10 +540,14 @@ def cmd_serve(cfg: Settings, a) -> None:
         schedule = load_schedule(cfg.orgs_dir / a.org / "schedule.yaml")
     except (ValueError, yaml.YAMLError) as e:
         sys.exit(str(e))
-    lock = _single_instance(Path("data") / "control_bot.lock")
+    lock_path, pid_path = Path("data") / "control_bot.lock", Path("data") / "control_bot.pid"
+    lock = _single_instance(lock_path)
+    if lock is None:
+        lock = _take_over(lock_path, pid_path)
     if lock is None:
         sys.exit("ربات کنترل همین الان در پنجرهٔ دیگری روشن است (شاید کوچک‌شده در نوار پایین صفحه). "
                  "یکی کافی است؛ این پنجره را ببندید.")
+    pid_path.write_text(str(os.getpid()), encoding="ascii")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     for noisy in ("httpx", "httpcore"):  # their INFO lines print full request addresses, which contain bot tokens
         logging.getLogger(noisy).setLevel(logging.WARNING)
