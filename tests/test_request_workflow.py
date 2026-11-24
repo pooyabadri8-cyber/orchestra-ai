@@ -380,3 +380,34 @@ def test_without_tgju_the_report_still_comes_with_a_note(engine):
     with rtm.sessions() as s:
         notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"] == "DATA-FX"]
     assert len(notes) == 1 and "بخش ارز و طلا اضافه نشد" in notes[0] and "بازار ارز و طلا" not in prov.calls[1]
+
+
+def test_no_report_when_tse_says_today_was_not_a_trading_day(engine):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN])
+    wf_support.TSE_DAY = "20261110"  # a holiday: the market page still shows the last trading day
+    try:
+        rid, handle = start()
+        out = handle.get_result()
+    finally:
+        wf_support.TSE_DAY = "20261111"
+    assert out["status"] == "skipped" and "روز معاملاتی" in out["reason"]
+    assert len(prov.calls) == 1  # only the Manager: nothing was written
+
+
+def test_a_stale_market_page_is_left_out_and_the_owner_is_told(engine):
+    import wf_support
+    draft = {**DRAFT, "post": {**DRAFT["post"], "paragraphs": [
+        "شاخص کل با رشد {{P3|abs_pct}} به {{P1|int}} واحد رسید.", "شاخص کل امروز در {{D1|name}} رشد کرد."]}}
+    rtm, prov, _ = runtime(engine, [PLAN, draft, CLEAN, CLEAN])
+    wf_support.TSE_INDEX = (8_150_000.0, 173_600.0)  # TSE moved on; the page did not
+    try:
+        rid, handle = start()
+        status = wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "skipped"}, timeout=90)
+    finally:
+        wf_support.TSE_INDEX = (7_976_400.0, 186_492.0)
+    assert "ارزش معاملات خرد" not in prov.calls[1]  # the writer never saw the stale figures
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        notes = [f["message"] for f in run.findings or [] if f["rule_id"] == "DATA-MARKET"]
+    assert any("bourse-trader" in n for n in notes), (status, run.detail)

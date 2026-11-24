@@ -12,18 +12,24 @@ from sqlalchemy import create_engine, text
 from orchestra.assets import AssetStore
 from orchestra.data.sources.bourse_trader import BourseTraderSource
 from orchestra.data.sources.tgju import TgjuSource
-from orchestra.data.sources.tse_live import TseFarabourseSource, TseIndicesSource
+from orchestra.data.sources.tse_live import TseBourseSource, TseFarabourseSource, TseIndicesSource
 
 
-def tse_live_sample(url: str, day: str = "20261111") -> bytes:
+TSE_DAY = "20261111"  # the trading day TSE reports; a test sets another day to play a holiday
+TSE_INDEX = (7_976_400.0, 186_492.0)  # the Bourse index and its change; the captured market page shows the same
+
+
+def tse_live_sample(url: str, day: str | None = None) -> bytes:
     """Captured TSE answers; the Farabourse trading day is moved to the test's day."""
     import json as _json
     fx = Path(__file__).parent / "fixtures"
     if "GetIndexB1LastAll" in url:
         return (fx / "tse_index_b1_sample.json").read_bytes()
     o = _json.loads((fx / "tse_overview_2_sample.json").read_text(encoding="utf-8"))
-    o["marketOverview"]["marketActivityDEven"] = int(day)
-    return _json.dumps(o).encode()
+    o["marketOverview"]["marketActivityDEven"] = int(day or TSE_DAY)
+    if url.rstrip("/").endswith("GetMarketOverview/1"):  # the Bourse: by default the same day and index as the page
+        o["marketOverview"].update(indexLastValue=TSE_INDEX[0], indexChange=TSE_INDEX[1])
+    return _json.dumps(o, ensure_ascii=False).encode()
 from orchestra.db import Base, Destination, Run, make_engine, make_sessionmaker
 from orchestra.llm import Completion, Gateway, Route
 from orchestra.runtime import Runtime
@@ -123,7 +129,8 @@ def make_runtime(workdir: Path, replies, page: bytes = PAGE) -> tuple[Runtime, S
         sessions=sessions, assets=AssetStore(workdir / "assets"),
         gateway=Gateway(sessions, {"writer": [Route(provider, "scripted-model")]}),
         fetcher=fetch, sources={"bourse_trader": BourseTraderSource(), "tgju": TgjuSource(),
-                                              "tse_indices": TseIndicesSource(), "tse_farabourse": TseFarabourseSource()}, brand_root=ROOT / "orgs",
+                                              "tse_indices": TseIndicesSource(), "tse_farabourse": TseFarabourseSource(),
+                                              "tse_bourse": TseBourseSource()}, brand_root=ROOT / "orgs",
         notifier=notifier, clock=lambda: datetime(2026, 11, 11, 13, 0, tzinfo=timezone.utc),
     )
     return runtime, provider, notifier

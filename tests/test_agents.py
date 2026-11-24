@@ -238,3 +238,61 @@ def test_a_stray_letter_is_a_typo_the_writer_must_fix():
     found = text_rules("ص صنایع پیشرو و مقاومتی", BRAND, "اسلاید ۴")
     assert [(f.rule_id, f.severity) for f in found] == [("R-TYPO", "block")] and "«ص»" in found[0].message
     assert text_rules("شاخص کل و صنایع پیشرو؛ ق.م و ه.ش", BRAND) == []
+
+
+# ---------------------------------------------------------------- is today's data really today's? (TSE + market page)
+
+def _acquire_both(sessions, assets, clock, tse_raw: bytes | None, page: bytes | None = PAGE):
+    from orchestra.data.sources.tse_live import TseBourseSource
+
+    async def fetch(url):
+        return tse_raw if "tsetmc" in url else page
+    with sessions.begin() as s:
+        page_id = asyncio.run(acquire(s, assets, BourseTraderSource(), fetch, clock())).snapshot_id if page else None
+        tse_id = asyncio.run(acquire(s, assets, TseBourseSource(), fetch, clock())).snapshot_id if tse_raw else None
+    return page_id, tse_id
+
+
+def _market(sessions, page_id, tse_id, clock):
+    with sessions.begin() as s:
+        return market_part(s, snapshot_id=page_id, brand=BRAND, run_date=TODAY, now=clock(), official_snapshot_id=tse_id)
+
+
+def test_index_comes_from_tse_when_today_is_confirmed(sessions, assets, clock):
+    from test_tse_live import bourse_overview
+    page_id, tse_id = _acquire_both(sessions, assets, clock, bourse_overview())
+    part, _ = _market(sessions, page_id, tse_id, clock)
+    by = {p.metric: p for p in part.points if p.subject is None}
+    assert by["index.total.value"].value == 7_976_412.3  # TSE's figure, not the page's rounded one
+    assert "retail.trade_value" in by and "market.flow_intensity_pct" in by and part.notes == []
+
+
+def test_no_report_on_a_day_tse_did_not_trade(sessions, assets, clock):
+    from orchestra.agents.analysis import InsufficientData
+    from test_tse_live import bourse_overview
+    page_id, tse_id = _acquire_both(sessions, assets, clock, bourse_overview(day=20261110))
+    with pytest.raises(InsufficientData, match="روز معاملاتی"):
+        _market(sessions, page_id, tse_id, clock)
+
+
+def test_a_stale_market_page_is_left_out(sessions, assets, clock):
+    from test_tse_live import bourse_overview
+    page_id, tse_id = _acquire_both(sessions, assets, clock, bourse_overview(value=8_150_000.0, change=173_600.0))
+    part, _ = _market(sessions, page_id, tse_id, clock)
+    metrics = {p.metric for p in part.points}
+    assert "index.total.value" in metrics and not metrics & {"retail.trade_value", "real_money_net.group.top_in"}
+    assert part.notes and not part.charts
+
+
+def test_report_goes_on_from_tse_when_the_market_page_is_down(sessions, assets, clock):
+    from test_tse_live import bourse_overview
+    _, tse_id = _acquire_both(sessions, assets, clock, bourse_overview(), page=None)
+    part, _ = _market(sessions, None, tse_id, clock)
+    assert {p.metric for p in part.points if p.subject is None} >= {"index.total.value", "index.total.change_pct"}
+    assert any("bourse-trader" in n for n in part.notes)
+
+
+def test_without_tse_the_page_is_used_with_a_warning(sessions, assets, clock):
+    page_id, _ = _acquire_both(sessions, assets, clock, None)
+    part, _ = _market(sessions, page_id, None, clock)
+    assert "retail.trade_value" in {p.metric for p in part.points} and any("تأیید نشد" in n for n in part.notes)

@@ -65,6 +65,8 @@ AUTO_FX_TEMPLATES = ("market_report",)  # the daily report also carries the doll
 FX_SOURCE = "tgju"
 AUTO_INDICES_TEMPLATES = ("market_report",)  # ... and the other indices and the industries' moves, from TSE
 INDICES_SOURCES = ("tse_indices", "tse_farabourse")
+OFFICIAL_SOURCE = "tse_bourse"  # TSE's overview: confirms the trading day and gives the index (agents/freshness.py)
+OFFICIAL_TEMPLATES = ("market_report",)
 STALE_HISTORY_DAYS = 6
 MAX_REVISIONS = 3  # how many times the owner may send one piece of content back
 OWNER_NOTE_MAX = 500
@@ -157,15 +159,16 @@ def _part(d: dict) -> Part:
 
 
 @DBOS.step()
-def s_market(org_id: str, snapshot_id: str, day_iso: str) -> dict:
+def s_market(org_id: str, snapshot_id: str | None, day_iso: str, official_snapshot_id: str | None = None) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     try:
         with r.sessions.begin() as s:
-            part, excluded = market_part(s, snapshot_id=snapshot_id, brand=brand, run_date=date.fromisoformat(day_iso), now=r.clock())
+            part, excluded = market_part(s, snapshot_id=snapshot_id or None, brand=brand, run_date=date.fromisoformat(day_iso),
+                                         now=r.clock(), official_snapshot_id=official_snapshot_id)
     except InsufficientData as e:
         return {"skip": str(e)}
-    return {"part": _part_json(part), "excluded": list(excluded)}
+    return {"part": _part_json(part), "excluded": list(excluded), "notes": list(part.notes)}
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, interval_seconds=20)
@@ -518,22 +521,33 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
     # ---- data and analysts
     parts: list[dict] = []
     excluded: list[str] = []
+    data_notes: list[dict] = []  # told to the owner with the content (not written into it)
     snapshot_id = ""
+    official_id: str | None = None
     if plan.has("acquire"):
+        if plan.template_id in OFFICIAL_TEMPLATES:  # TSE first: it says whether today is a trading day at all
+            try:
+                official = await s_acquire_extra(OFFICIAL_SOURCE)
+            except Exception as e:  # noqa: BLE001  TSE unreachable after the retries
+                official = {"error": f"TSE در دسترس نبود ({type(e).__name__})"}
+            official_id = official.get("snapshot_id")
         try:
             got = await s_acquire(run_id, source_id)
-        except Exception as e:
-            return s_finish(run_id, "failed", detail={"error": f"acquire: {e}"})
+        except Exception as e:  # noqa: BLE001  the market page unreachable after the retries
+            got = {"error": f"acquire: {e}"}
         if "error" in got:
-            return s_finish(run_id, "failed", detail={"error": got["error"]})
-        snapshot_id = got["snapshot_id"]
+            if official_id is None:  # neither source: nothing to report from
+                return s_finish(run_id, "failed", detail={"error": got["error"]})
+        else:
+            snapshot_id = got["snapshot_id"]
     if plan.has("market"):
-        m = s_market(org_id, snapshot_id, day)
+        m = s_market(org_id, snapshot_id, day, official_id)
         if "skip" in m:
             return s_finish(run_id, "skipped", detail={"reason": m["skip"]})
         parts.append(m["part"])
         excluded = m["excluded"]
-    data_notes: list[dict] = []  # told to the owner with the content (not written into it)
+        data_notes += [_note("DATA-MARKET", n) for n in m.get("notes", [])]
+    index_snapshot = official_id or snapshot_id or None  # where today's closing index value was read
     asked = plan.has("technical")
     tech_subject = (params.get("technical_subject") or params.get("subject")) if asked else \
         (AUTO_TECHNICAL if plan.template_id in AUTO_TECHNICAL_TEMPLATES else None)
@@ -545,7 +559,7 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
                 fetched = {"error": f"TSE در دسترس نبود ({type(e).__name__})"}
             if "error" in fetched:
                 data_notes.append(_note("DATA-TSE", f"سابقهٔ {tech_subject} از TSE تازه نشد: {fetched['error'][:200]}"))
-        out = s_technical(tech_subject, snapshot_id if plan.has("market") else None, day)
+        out = s_technical(tech_subject, index_snapshot if plan.has("market") else None, day)
         if "missing" in out:
             if asked:
                 return s_finish(run_id, "needs_data", detail={"message": out["missing"]})
@@ -589,7 +603,7 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
         if "missing" in out:
             return s_finish(run_id, "needs_data", detail={"message": out["missing"]})
         parts.append(out["part"])
-    report = s_compose(snapshot_id or "imports", parts, excluded, day)["report"]
+    report = s_compose(snapshot_id or official_id or "imports", parts, excluded, day)["report"]
 
     # ---- writer -> checks -> designer -> package -> the owner. The owner may send it back with a note; the team then
     # makes a new version from the same data. If a new version cannot be made, the last good one keeps waiting.

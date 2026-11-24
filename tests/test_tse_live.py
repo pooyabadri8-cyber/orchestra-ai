@@ -42,3 +42,28 @@ def test_changed_site_is_reported(raw):
     for src in (TseIndicesSource(), TseFarabourseSource()):
         with pytest.raises(ParseError):
             src.parse(raw)
+
+
+def bourse_overview(value=7_976_412.3, change=186_480.0, day=20261111, state="بسته") -> bytes:
+    """GetMarketOverview/1 in the captured shape of GetMarketOverview/2 (same endpoint, market 1)."""
+    o = json.loads((FX / "tse_overview_2_sample.json").read_text(encoding="utf-8"))["marketOverview"]
+    o.update(indexLastValue=value, indexChange=change, marketActivityDEven=day, marketStateTitle=state)
+    return json.dumps({"marketOverview": o}, ensure_ascii=False).encode()
+
+
+def test_bourse_overview():
+    from orchestra.data.sources.tse_live import TseBourseSource
+    res = TseBourseSource().parse(bourse_overview())
+    by = {p.metric: p.value for p in res.points}
+    assert by["index.total.value"] == 7_976_412.3 and by["index.total.change"] == 186_480.0
+    assert by["index.total.change_pct"] == pytest.approx(186_480 / (7_976_412.3 - 186_480) * 100)
+    assert by["market.trading_day"] == 20261111 and by["market.closed"] == 1.0
+    assert {p.metric: p.value for p in TseBourseSource().parse(bourse_overview(state="باز")).points}["market.closed"] == 0.0
+    assert TseBourseSource().url.endswith("/GetMarketOverview/1")
+
+
+def test_bourse_overview_rejects_a_changed_site():
+    from orchestra.data.sources.tse_live import TseBourseSource
+    for raw in (b"<html>", b'{"marketOverview": {"indexLastValue": 0}}', bourse_overview(day=0)):
+        with pytest.raises(ParseError):
+            TseBourseSource().parse(raw)

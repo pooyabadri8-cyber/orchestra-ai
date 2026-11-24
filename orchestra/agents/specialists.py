@@ -35,10 +35,12 @@ class Part:
     notes: list[str] = field(default_factory=list)  # for the owner, not for the writer
 
 
-def market_part(session: Session, *, snapshot_id: str, brand: Brand, run_date: date, now: datetime) -> tuple[Part, tuple[str, ...]]:
+def market_part(session: Session, *, snapshot_id: str | None, brand: Brand, run_date: date, now: datetime,
+                official_snapshot_id: str | None = None) -> tuple[Part, tuple[str, ...]]:
     """The market analyst: index, retail value, real-money flow and its intensity, leading groups. Returns the part
-    and the subjects excluded by the org's forbidden topics."""
-    rep = analyze_market_close(session, snapshot_id, brand, run_date)
+    and the subjects excluded by the org's forbidden topics. `official_snapshot_id`: TSE's overview, which confirms
+    the trading day (agents/freshness.py); the part's notes say what was left out and why."""
+    rep = analyze_market_close(session, snapshot_id, brand, run_date, official_snapshot_id=official_snapshot_id)
     points = list(rep.points)
     facts = list(rep.facts)
     by = {p.metric: p for p in points if p.subject is None}
@@ -50,7 +52,7 @@ def market_part(session: Session, *, snapshot_id: str, brand: Brand, run_date: d
             strength = "قابل توجه" if abs(fi.value) >= STRONG_FLOW_PCT else "محدود"
             facts.append(f"شدت جابه‌جایی پول حقیقی نسبت به ارزش معاملات خرد {strength} است.")
     charts = [c for c in [groups_flow_chart(points)] if c]
-    return Part(title="بازار", points=points, facts=facts, charts=charts), rep.excluded
+    return Part(title="بازار", points=points, facts=facts, charts=charts, notes=list(rep.notes)), rep.excluded
 
 
 MAX_DAY_GAP = 0.10  # an index never moves this much between two trading days; more means the two sources disagree
