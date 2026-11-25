@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     tgju_url: str = ""  # a different address for tgju's ajax.json (mirror or local test server)
     tse_old_base: str = "https://old.tsetmc.com"
     tse_cdn_base: str = "https://cdn.tsetmc.com"
+    # foreign sources (Telegram channels, foreign media) through the VPN's local proxy, e.g. http://127.0.0.1:10809 or
+    # socks5://127.0.0.1:10808. Empty: the proxy Windows advertises (System Proxy), if any.
+    foreign_proxy: str = ""
 
     # publishing
     max_publish_attempts: int = 4

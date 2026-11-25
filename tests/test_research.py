@@ -221,3 +221,28 @@ def test_news_is_collected_on_an_interval(sessions, assets, tmp_path):
     clock.advance(11 * 60)
     c.tick()
     assert len(calls) == 2 and c.last == {"sena": "0 تازه از 30"}
+
+
+def test_foreign_sources_use_the_configured_proxy(monkeypatch):
+    """ORCHESTRA_FOREIGN_PROXY is used for foreign sources only; Iranian sources never go through it."""
+    import httpx
+
+    from orchestra.cli import _news_fetcher
+    seen = []
+    real = httpx.AsyncClient
+
+    class Spy(real):
+        def __init__(self, *a, **kw):
+            seen.append((kw.get("proxy"), kw.get("trust_env")))
+            super().__init__(*a, **kw)
+
+        async def get(self, url, **kw):
+            return httpx.Response(200, content=b"ok", request=httpx.Request("GET", url))
+    monkeypatch.setattr(httpx, "AsyncClient", Spy)
+    fetch = _news_fetcher("socks5://127.0.0.1:10808")
+    assert asyncio.run(fetch("https://t.me/s/x", True)) == b"ok"
+    assert asyncio.run(fetch("https://www.isna.ir/rss", False)) == b"ok"
+    assert seen == [("socks5://127.0.0.1:10808", False), (None, False)]
+    seen.clear()
+    asyncio.run(_news_fetcher("")("https://t.me/s/x", True))
+    assert seen == [(None, True)]  # no setting: the proxy Windows advertises

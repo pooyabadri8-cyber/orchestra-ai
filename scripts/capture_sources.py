@@ -85,13 +85,56 @@ def ext_for(content_type: str) -> str:
     return "bin"
 
 
+LOCAL_PORTS = (10808, 10809, 2080, 2081, 1080, 1081, 7890, 7891, 8080, 8118, 8889, 9050)
+PROBE_URL = "https://t.me/s/betasahm1"
+
+
+def foreign_proxy_setting() -> str:
+    """ORCHESTRA_FOREIGN_PROXY from the environment or .env."""
+    if os.environ.get("ORCHESTRA_FOREIGN_PROXY"):
+        return os.environ["ORCHESTRA_FOREIGN_PROXY"]
+    env = Path(".env")
+    if env.is_file():
+        for line in env.read_text(encoding="utf-8-sig").splitlines():
+            if line.strip().startswith("ORCHESTRA_FOREIGN_PROXY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+async def proxy_check() -> dict:
+    """Which proxy Windows advertises, which usual VPN ports listen on THIS computer (127.0.0.1 only), and which of them
+    reaches Telegram. Nothing leaves the computer except the one test request through each local port."""
+    import socket
+    import urllib.request
+    out: dict = {"system_proxies": urllib.request.getproxies(), "listening": [], "works": []}
+    for port in LOCAL_PORTS:
+        with socket.socket() as sock:
+            sock.settimeout(0.3)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                out["listening"].append(port)
+    for port in out["listening"]:
+        for scheme in ("http", "socks5"):
+            proxy = f"{scheme}://127.0.0.1:{port}"
+            try:
+                async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(15, connect=8), headers=HEADERS) as http:
+                    r = await http.get(PROBE_URL)
+                if r.status_code == 200:
+                    out["works"].append(proxy)
+                    break
+            except Exception as e:  # noqa: BLE001  a port that is not this kind of proxy
+                out.setdefault("errors", []).append(f"{proxy}: {type(e).__name__}")
+    return out
+
+
 async def main() -> int:
     os.chdir(Path(__file__).resolve().parent.parent)
     out = Path("captures") / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     index = []
     local = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True, trust_env=False)
-    vpn = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True, trust_env=True)
+    explicit = foreign_proxy_setting()
+    vpn = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True,
+                            trust_env=not explicit, proxy=explicit or None)
     async with local, vpn:
         for name, url, note, foreign in [(*t, False) for t in TARGETS] + news_targets():
             http = vpn if foreign else local
@@ -108,6 +151,15 @@ async def main() -> int:
                 print(f"ERR  {name}: {type(e).__name__}")
             index.append(entry)
             await asyncio.sleep(1.0)  # be polite
+    if any(e.get("error") for e in index if e["name"].startswith("news_")):
+        print("\nSome foreign sources did not connect; checking the VPN's local proxy on this computer...")
+        check = await proxy_check()
+        check["setting"] = explicit
+        (out / "proxy_check.json").write_text(json.dumps(check, ensure_ascii=False, indent=1), encoding="utf-8")
+        if check["works"]:
+            print(f"\n>>> Put this line in .env:  ORCHESTRA_FOREIGN_PROXY={check['works'][0]}")
+        else:
+            print(f"No working local proxy found (listening ports: {check['listening'] or 'none'}). Is the VPN on?")
     (out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     archive = Path(shutil.make_archive(str(Path.cwd() / f"captures_{out.name}"), "zip", out))
     ok = sum(1 for e in index if e.get("status") == 200)

@@ -93,15 +93,15 @@ def _runtime(cfg: Settings) -> Runtime:
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
                    gateway=Gateway(sessions, {"writer": routes, "manager": tier(cfg.manager_model), "reviewer": tier(cfg.reviewer_model)},
                                    max_calls_per_run=cfg.llm_max_calls_per_run),
-                   fetcher=http_fetcher(), news_fetcher=_news_fetcher(), sources={"bourse_trader": market, "tgju": fx,
+                   fetcher=http_fetcher(), news_fetcher=_news_fetcher(cfg.foreign_proxy), sources={"bourse_trader": market, "tgju": fx,
                                                     "tse_indices": TseIndicesSource(cfg.tse_cdn_base),
                                                     "tse_farabourse": TseFarabourseSource(cfg.tse_cdn_base)},
                    brand_root=cfg.orgs_dir,
                    tse_old_base=cfg.tse_old_base, tse_cdn_base=cfg.tse_cdn_base)
 
 
-def _news_fetcher():
-    local, foreign = http_fetcher(), http_fetcher(trust_env=True)
+def _news_fetcher(proxy: str = ""):
+    local, foreign = http_fetcher(), http_fetcher(trust_env=True, proxy=proxy or None)
 
     async def fetch(url: str, is_foreign: bool) -> bytes:
         return await (foreign if is_foreign else local)(url)
