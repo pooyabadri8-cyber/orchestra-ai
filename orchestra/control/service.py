@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from ..assets import AssetStore
 from ..agents import marketing as mk
 from ..agents import reporting as rp
+from .. import lessons as memory
 from ..crm import store as crm
 from ..db import (
     ContentPlanRow, ControlJobReport, ControlPrompt, ControlRequest, ControlState, OrgControl, PackageRow, PublishJob, Run,
@@ -78,6 +79,8 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /leads — سرنخ‌های باز تامین مالی
 /lead شماره — جزئیات و سابقهٔ یک سرنخ
 /note شماره متن — یادداشت روی سرنخ
+/lessons — قاعده‌هایی که تیم از بازخوردهای شما به خاطر سپرده است
+/lesson متن — یک قاعدهٔ همیشگی تازه برای نویسنده
 /cancel — انصراف از نوشتن توضیح اصلاح"""
 
 
@@ -294,6 +297,9 @@ class ControlService:
             elif action == "ped" and pid.isdigit():
                 self.api.answer_button(str(cq.get("id")))
                 self.ask_plan_note(int(pid), chat)
+            elif action in ("lk", "lx", "lr") and pid.isdigit():
+                self.api.answer_button(str(cq.get("id")), "ثبت شد")
+                self.decide_lesson(int(pid), action, f"{self.api.platform}:{user}", chat)
             elif action == "ld" and self.crm_cfg is not None:
                 lead_id, _, stage = pid.partition(":")
                 if lead_id.isdigit():
@@ -340,6 +346,19 @@ class ControlService:
                            actor=actor)
         elif word == "/plans":
             self._say(chat, self.plans_text())
+        elif word == "/lessons":
+            self.show_lessons(chat)
+        elif word == "/lesson":
+            if not rest:
+                self._say(chat, "متن قاعده را بنویسید، مثل: /lesson تیتر حداکثر ده کلمه باشد")
+            else:  # typed by the owner: that is the decision, no second question
+                with self.sessions.begin() as s:
+                    row = memory.offer(s, self.org_id, "writing", rest, "typed")
+                    lid = row.id if row is not None else None
+                if lid is None:
+                    self._say(chat, f"این متن قاعده نمی‌شود (خالی، بیش از {memory.MAX_LEN} نویسه، یا از قبل هست).")
+                else:
+                    self.decide_lesson(lid, "lk", actor, chat)
         elif word in ("/leads", "/lead", "/note"):
             if self.crm_cfg is None:
                 self._say(chat, "CRM تنظیم نشده است (orgs/<org>/crm.yaml).")
@@ -544,8 +563,11 @@ class ControlService:
             self._finish_prompt(prompt, "approved", f"✅ درخواست {pid} تأیید شد؛ در صف انتشار است.")
         elif status == "revising":
             self._finish_prompt(prompt, "revising", f"✏️ درخواست {pid}: اصلاح ثبت شد؛ نسخهٔ جدید را همین‌جا می‌فرستم.\nتوضیح شما: {reason}")
+            self.offer_lesson(reason or "", "writing", f"revise:{pid}", chat=chat)
         elif status == "rejected":
             self._finish_prompt(prompt, "rejected", f"❌ درخواست {pid} رد شد." + (f"\nدلیل: {reason}" if reason else ""))
+            if reason:
+                self.offer_lesson(reason, "writing", f"reject:{pid}", chat=chat)
         else:
             self._finish_prompt(prompt, "closed", f"⚠️ درخواست {pid}: {result.get('error') or status}")
 
@@ -624,6 +646,8 @@ class ControlService:
         if revise_of is not None:
             self._close_plan_question(revise_of, f"⌛️ برنامهٔ {revise_of} با نسخهٔ جدید (شمارهٔ {plan_id}) جایگزین شد.", tell=False)
         self.show_plan(plan_id)
+        if revise_of is not None and note:
+            self.offer_lesson(note, "planning", f"plan:{revise_of}", chat=chat)
 
     def show_plan(self, plan_id: int) -> None:
         with self.sessions() as s:
@@ -780,6 +804,49 @@ class ControlService:
             return
         self._set_state(key, "sent")
         self._say(None, self.report_text(weekly.days))
+
+    # ------------------------------------------------------------------ team memory (lessons from the owner's notes)
+
+    def offer_lesson(self, text: str, scope: str, origin: str, *, chat: str | None) -> None:
+        """Ask whether a note should become a standing instruction. Nothing is kept unless the owner says so."""
+        with self.sessions.begin() as s:
+            row = memory.offer(s, self.org_id, scope, text, origin)
+            lid = row.id if row is not None else None
+        if lid is None:
+            if origin == "typed":
+                self._say(chat, f"این متن قاعده نمی‌شود (خالی، بیش از {memory.MAX_LEN} نویسه، یا از قبل هست).")
+            return
+        who = "برنامه‌ریزی تقویم محتوا" if scope == "planning" else "نوشتن همهٔ محتوای بعدی"
+        question = f"📌 این را قاعدهٔ همیشگی {who} کنم؟\n«{text.strip()[:memory.MAX_LEN]}»"
+        for c in ([chat] if chat else self.owners):
+            self.api.send_text(c, question, buttons=[[("📌 بله، همیشه", f"lk:{lid}"), ("فقط همین بار", f"lx:{lid}")]])
+
+    def decide_lesson(self, lesson_id: int, action: str, actor: str, chat: str) -> None:
+        from ..brand import load_brand
+        now = self.clock()
+        try:
+            with self.sessions.begin() as s:
+                if action == "lk":
+                    row = memory.activate(s, load_brand(self.org_id, self.orgs_root), lesson_id, actor, now)
+                    text = f"📌 قاعده ثبت شد و از این به بعد رعایت می‌شود: «{row.text}» (فهرست: /lessons)"
+                else:
+                    row = memory.close(s, self.org_id, lesson_id, actor, now)
+                    text = "قاعده برداشته شد." if action == "lr" else "باشد، فقط برای همین بار."
+        except memory.LessonError as e:
+            text = f"⚠️ {e}"
+        self._say(chat, text)
+
+    def show_lessons(self, chat: str) -> None:
+        with self.sessions() as s:
+            rows = memory.active_rows(s, self.org_id)
+        if not rows:
+            self._say(chat, "هنوز قاعده‌ای ثبت نشده است. وقتی محتوا را با توضیح اصلاح یا رد کنید، می‌پرسم که قاعدهٔ همیشگی شود؛ "
+                            "یا بنویسید: /lesson متن قاعده")
+            return
+        self._say(chat, f"📌 {len(rows)} قاعدهٔ همیشگی (هر کدام را می‌توانید بردارید):")
+        for r in rows:
+            where = "برنامه‌ریزی" if r.scope == "planning" else "نوشتن"
+            self.api.send_text(chat, f"[{where}] {r.text}", buttons=[[("🗑 برداشتن", f"lr:{r.id}")]])
 
     # ------------------------------------------------------------------ CRM (leads from the public intake bot)
 

@@ -483,3 +483,20 @@ def test_no_important_news_is_skipped_without_writing(engine):
     with rtm.sessions() as s:
         assert "خبر مهمی" in s.get(Run, rid).detail["reason"]
     assert len(prov.calls) == 1
+
+
+def test_active_lessons_reach_the_writer_and_editor_and_are_recorded(engine):
+    from orchestra import lessons as memory
+    from orchestra.brand import load_brand
+    rtm, prov, _ = runtime(engine, [PLAN, DRAFT, CLEAN, CLEAN])
+    with rtm.sessions.begin() as s:
+        lid = memory.offer(s, "pouyan", "writing", "در پایان هر پست یک جملهٔ جمع‌بندی بیاید", "typed").id
+        memory.activate(s, load_brand("pouyan"), lid, "u", rtm.clock())
+    rid, _ = start()
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked"}, timeout=90) == "awaiting_approval"
+    with rtm.sessions() as s:
+        calls = {c.step_key: c.system for c in s.execute(select(LLMCall)).scalars()}
+        content = json.loads(s.get(PackageRow, s.get(Run, rid).package_id).content_json)
+    assert "یک جملهٔ جمع‌بندی" in calls["write.1"] and "یک جملهٔ جمع‌بندی" in calls["review.editor.1"]
+    assert "یک جملهٔ جمع‌بندی" not in calls["review.compliance.1"] and "یک جملهٔ جمع‌بندی" not in calls["manager.plan.0"]
+    assert content["versions"]["lessons"] == memory.fingerprint(("در پایان هر پست یک جملهٔ جمع‌بندی بیاید",))

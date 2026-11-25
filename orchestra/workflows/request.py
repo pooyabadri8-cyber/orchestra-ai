@@ -382,10 +382,14 @@ async def q_write(org_id: str, run_id: str, report: dict, day_iso: str, platform
                   feedback: list[str] | None, attempt: int, task: str = "") -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
+    from ..lessons import active as active_lessons
+    from ..lessons import fingerprint
+    with r.sessions() as s:
+        lessons = tuple(active_lessons(s, org_id, "writing"))
     try:
         draft = await write_multichannel(r.gateway, brand, AnalysisReport.model_validate(report), org_id=org_id, run_id=run_id,
                                          date_text=long_date(date.fromisoformat(day_iso)), platforms=tuple(platforms),
-                                         focus=focus, feedback=feedback, step_key=f"write.{attempt}", task=task)
+                                         focus=focus, feedback=feedback, step_key=f"write.{attempt}", task=task, lessons=lessons)
     except BudgetExceeded as e:
         return {"error": f"budget: {e}"}
     except WriterError as e:
@@ -394,7 +398,7 @@ async def q_write(org_id: str, run_id: str, report: dict, day_iso: str, platform
         if e.retryable:
             raise
         return {"error": f"model: {e}"}
-    return {"draft": draft.model_dump(mode="json")}
+    return {"draft": draft.model_dump(mode="json"), "lessons": fingerprint(lessons)}
 
 
 def _vc_json(vc: VerifiedContent) -> dict:
@@ -437,9 +441,13 @@ def s_check(org_id: str, report: dict, draft: dict, platforms: list[str]) -> dic
 async def s_review(org_id: str, run_id: str, report: dict, verified: dict, attempt: int, which: str) -> list[dict]:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
+    from ..lessons import active as active_lessons
+    with r.sessions() as s:
+        lessons = tuple(active_lessons(s, org_id, "writing"))
+    kw = {"lessons": lessons} if which == "editor" else {}
     fn = editorial_review if which == "editor" else compliance_review
     found = await fn(r.gateway, brand, _vc(verified), AnalysisReport.model_validate(report), org_id=org_id, run_id=run_id,
-                     step_key=f"review.{which}.{attempt}")
+                     step_key=f"review.{which}.{attempt}", **kw)
     return [f.__dict__ for f in found]
 
 
@@ -521,6 +529,7 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
             return {"status": "failed", "detail": {"error": f"write: {e}"}, "why": f"نویسنده: {e}"}
         if "error" in written:
             return {"status": "failed", "detail": {"error": written["error"]}, "why": written["error"]}
+        lessons_fp = written.get("lessons", "none")
         verified = s_check(org_id, report, written["draft"], platforms)
         findings = list(verified["findings"])
         if not verified["blocked"]:
@@ -566,7 +575,7 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
     risk = "medium" if any(f["severity"] == "warn" for f in findings) else "low"
     versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,
                 "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
-                "technical": TECH_V, "fundamental": FUND_V, "research_prompt": RESEARCH_PROMPT}
+                "technical": TECH_V, "fundamental": FUND_V, "research_prompt": RESEARCH_PROMPT, "lessons": lessons_fp}
     try:
         pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions, version, supersedes,
                         plan.template_id, publish_at_iso, evidence_ids)

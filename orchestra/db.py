@@ -361,6 +361,22 @@ class IntakeChat(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class Lesson(Base):
+    """A standing instruction the owner chose to keep, in their own words (team memory). offered -> active |
+    dismissed; active -> retired. Only active lessons reach the writer, the editor or the planner."""
+
+    __tablename__ = "lessons"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    scope: Mapped[str] = mapped_column(String(16))  # writing | planning
+    text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="offered")
+    origin: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "revise:12", "reject:7", "plan:3", "typed"
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
 def make_engine(url: str) -> Engine:
     engine = create_engine(url, future=True, pool_pre_ping=True)
     if engine.dialect.name == "sqlite":

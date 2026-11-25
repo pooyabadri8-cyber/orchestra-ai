@@ -91,8 +91,8 @@ def apply_layout(draft: MultiChannelDraft, layout: tuple[Slot, ...]) -> MultiCha
 
 # ---------------------------------------------------------------------------------------------------- writing
 
-def system_prompt(brand: Brand) -> str:
-    return base_system_prompt(brand) + "\n" + "\n".join([
+def system_prompt(brand: Brand, lessons: tuple[str, ...] = ()) -> str:
+    return base_system_prompt(brand, lessons) + "\n" + "\n".join([
         "",
         "تو برای چند کانال هم‌زمان می‌نویسی و هر کانال سبک خودش را دارد:",
         "- پست تلگرام و بله: تحلیلی و کامل، ۲ تا ۵ بند، هر بند یک ایدهٔ مشخص با عدد پشتیبان.",
@@ -163,8 +163,8 @@ def parse_multichannel(text: str) -> MultiChannelDraft:
 
 async def write_multichannel(gateway: Gateway, brand: Brand, report: AnalysisReport, *, org_id: str, run_id: str,
                              date_text: str, platforms: tuple[str, ...], focus: str = "", feedback: list[str] | None = None,
-                             step_key: str = "write", task: str = "") -> MultiChannelDraft:
-    system = system_prompt(brand)
+                             step_key: str = "write", task: str = "", lessons: tuple[str, ...] = ()) -> MultiChannelDraft:
+    system = system_prompt(brand, lessons)
     layout = layout_for(report, brand) if "instagram" in platforms or {"telegram", "bale"} & set(platforms) else None
     user = user_prompt(report, date_text=date_text, platforms=platforms, focus=focus, feedback=feedback, layout=layout,
                        cover=brand.template.carousel_cover, task=task)

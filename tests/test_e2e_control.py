@@ -132,7 +132,10 @@ def test_request_approve_publish_from_the_phone(project, service, platform):  # 
     wait_for(lambda: any("تأیید شد" in t and "انتشار فعال" in t for t in control_texts()), service)
     assert posts("TGCHAN") == 1 and len(sent("TGCHAN", "sendMediaGroup")) == 1 and posts("BLCHAN") == 1
 
-    # restart: old messages are not handled again, nothing is re-sent, and the bot still answers
+    # restart: old messages are not handled again, nothing is re-sent, and the bot still answers.
+    # Stop only once the bot has saved its place past /status (it asks for the next update), as it would be after any
+    # normal stop; a stop between handling and saving may answer /status again, which is harmless and not tested here.
+    wait_for(lambda: FakeServices.offsets.get("CTRL", 0) > _uid[0], service)
     service.stop()
     before = len(sent())
     service.start()
@@ -240,7 +243,8 @@ def test_a_wrong_token_is_explained_at_start(project):  # noqa: F811
 
 
 def questions():
-    return [m for m in sent("CTRL", "sendMessage") if "reply_markup" in m]
+    """Approval questions only (an offer to keep a note as a lesson has buttons too)."""
+    return [m for m in sent("CTRL", "sendMessage") if "reply_markup" in m and "درخواست تأیید" in m.get("text", "")]
 
 
 def test_send_back_with_a_note_then_approve_the_new_version(project, service):  # noqa: F811
@@ -255,6 +259,7 @@ def test_send_back_with_a_note_then_approve_the_new_version(project, service):  
     say("تیتر را کوتاه‌تر کن")
     wait_for(lambda: len(questions()) == 2, service)
     assert any("نسخهٔ 2" in t for t in control_texts())
+    assert any("قاعدهٔ همیشگی" in t and "تیتر را کوتاه‌تر کن" in t for t in control_texts())  # offered as a lesson
     writer_prompts = [p for role, p in FakeServices.prompts if role == "writer"]
     assert len(writer_prompts) == 2 and "تیتر را کوتاه‌تر کن" in writer_prompts[1] and "تیتر را کوتاه‌تر کن" not in writer_prompts[0]
     assert FakeServices.calls.count("manager") == 1  # the plan and the data are not redone

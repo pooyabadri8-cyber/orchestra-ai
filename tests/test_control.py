@@ -528,7 +528,8 @@ def test_revise_button_then_note_then_new_version_gets_a_new_question(rbot, sess
     assert prompt(sessions).state == "revising" and any("اصلاح ثبت شد" in t for t in api.texts())
     svc.tick()
     svc.tick()
-    assert len([m for m in api.out if m.get("buttons")]) == 1  # the old content is not offered again meanwhile
+    questions = [m for m in api.out if m.get("buttons") and m["buttons"][0][0][1].startswith("ok:")]
+    assert len(questions) == 1  # the old content is not offered again meanwhile
     api.press("ok:1")
     svc.tick()
     assert jobs(sessions) == []  # and its button is dead

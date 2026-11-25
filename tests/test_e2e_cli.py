@@ -64,6 +64,7 @@ class FakeServices(BaseHTTPRequestHandler):
     # ---- a Bot API (Telegram/Bale shape): /bot<token>/<method>. Everything sent is recorded; updates are queued.
     sent: list[dict] = []
     updates: list[dict] = []
+    offsets: dict[str, int] = {}  # the highest offset each bot asked for: everything below it was handled and saved
     lock = threading.Lock()
 
     def _bot(self, raw: bytes) -> None:
@@ -83,6 +84,7 @@ class FakeServices(BaseHTTPRequestHandler):
         with FakeServices.lock:
             if method == "getUpdates":
                 offset = int(fields.get("offset", 0))
+                FakeServices.offsets[token] = max(offset, FakeServices.offsets.get(token, 0))
                 result = [u for u in FakeServices.updates if u["update_id"] >= offset]
             else:
                 FakeServices.sent.append({"token": token, "method": method, **fields})
@@ -118,7 +120,7 @@ def project(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
     FakeServices.plan, FakeServices.draft, FakeServices.calls = PLAN, DRAFT, []
-    FakeServices.sent, FakeServices.updates, FakeServices.prompts = [], [], []
+    FakeServices.sent, FakeServices.updates, FakeServices.prompts, FakeServices.offsets = [], [], [], {}
     FakeServices.tse_down = False
     work = tmp_path / "orchestra-ai-main"
     try:
@@ -131,6 +133,9 @@ def project(tmp_path):
             continue
         (work / f).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / f, work / f)
+    # the copy never reaches the internet: its news sources (collected in the background by `serve`) point at the fake server
+    (work / "orgs" / "pouyan" / "research.yaml").write_text(
+        f"org_id: pouyan\nsources:\n  - {{id: fake, name: fake, type: rss, url: 'http://127.0.0.1:{port}/rss'}}\n", encoding="utf-8")
     (work / ".env").write_text("﻿" + "\n".join([  # Notepad on Windows saves a BOM
         "ORCHESTRA_DATABASE_URL=sqlite:///data/app.db",
         "ORCHESTRA_SYSTEM_DATABASE_URL=sqlite:///data/dbos.sqlite",
