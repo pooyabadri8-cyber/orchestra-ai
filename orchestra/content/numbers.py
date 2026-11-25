@@ -17,7 +17,7 @@ THOUSANDS, DECIMAL, MINUS = "٬", "٫", "−"
 SCALE_VALUE = {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3, "": 1.0}
 SCALE_WORD = {"T": "همت", "B": "میلیارد تومان", "M": "میلیون تومان", "K": "هزار تومان", "": "تومان"}
 
-FORMATS = ("money", "abs_money", "int", "num", "signed", "pct", "abs_pct", "signed_pct", "name", "rial", "ratio", "price")
+FORMATS = ("money", "abs_money", "int", "num", "signed", "pct", "abs_pct", "signed_pct", "name", "rial", "ratio", "price", "as_is")
 
 TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*(?:\|\s*([a-z_]+)\s*)?\}\}")
 
@@ -40,6 +40,7 @@ class BoundPoint(BaseModel):
     scale: str = ""
     subject: str | None = None
     formats: tuple[str, ...] = ()
+    text: str | None = None  # a figure quoted from a source (news): shown exactly so, unit included ("as_is")
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,10 @@ def format_point(p: BoundPoint, fmt: str) -> str:
         raise BindingError(f"قالب ناشناخته «{fmt}»")
     if p.formats and fmt not in p.formats:
         raise BindingError(f"قالب «{fmt}» برای {p.key} مجاز نیست (مجاز: {', '.join(p.formats)})")
+    if fmt == "as_is":
+        if not p.text:
+            raise BindingError(f"{p.key} متن منبع ندارد")
+        return p.text
     if fmt == "name":
         if not p.subject:
             raise BindingError(f"{p.key} نام ندارد")

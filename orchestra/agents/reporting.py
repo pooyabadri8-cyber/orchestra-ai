@@ -36,7 +36,7 @@ RULE_FA = {
     "D-FIT": "جملهٔ جانشده در اسلاید", "DATA": "مشکل داده",
 }
 DATA_FA = {"DATA-FX": "ارز و طلا (tgju)", "DATA-TSE": "سابقهٔ شاخص (TSE)", "DATA-INDICES": "شاخص‌ها و صنایع (TSE)",
-           "DATA-TECHNICAL": "تحلیل تکنیکال", "DATA-STALE": "سابقهٔ کهنهٔ شاخص", "DATA-TODAY": "عدد امروز شاخص"}
+           "DATA-TECHNICAL": "تحلیل تکنیکال", "DATA-NEWS": "منبع‌های خبری", "DATA-STALE": "سابقهٔ کهنهٔ شاخص", "DATA-TODAY": "عدد امروز شاخص"}
 ROLE_FA = {"write": "نویسنده", "review": "بازبین‌ها", "manager": "مدیر", "marketing": "بازاریابی"}
 DONE = ("awaiting_approval", "approved", "rejected", "expired")  # runs that produced content for the owner
 PUBLISHED = "confirmed"

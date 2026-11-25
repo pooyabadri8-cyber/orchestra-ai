@@ -23,6 +23,8 @@ from sqlalchemy import select
 
 from ..agents.analysis import AnalysisReport, InsufficientData
 from ..agents.knowledge import knowledge_part
+from ..agents.research import PROMPT_VERSION as RESEARCH_PROMPT
+from ..agents.research import ResearchError, candidates, collect, load_research, news_part, pick
 from ..agents.manager import PROMPT_VERSION as MANAGER_PROMPT
 from ..agents.manager import plan_request
 from ..agents.multichannel import PROMPT_VERSION as WRITER_PROMPT
@@ -47,10 +49,10 @@ from ..content.template import PostParts
 from ..data.acquisition import AcquisitionError, acquire
 from ..data.imports import load_bars, record_import
 from ..data.sources import tse
-from ..db import DataPointRow, DataSnapshot, Run
+from ..db import DataPointRow, DataSnapshot, EvidenceItem, Run
 from ..knowledge import KnowledgeError, load_knowledge
 from ..llm import BudgetExceeded, LLMError
-from ..package import AssetRef, DataPointRef
+from ..package import AssetRef, DataPointRef, EvidenceRef
 from ..registry import DEFAULT_ROOT, ExecutionPlan, OrgPolicy, Registry, RegistryError
 from ..runtime import rt
 from ..visual.charts import ChartSpec
@@ -286,6 +288,53 @@ def s_knowledge(org_id: str, topic: str) -> dict:
     return {"part": _part_json(part), "task": task}
 
 
+NEWS_TASK = ("خلاصهٔ مهم‌ترین خبرهای موثر بر بازار را فقط از «واقعیت‌ها» (متن خبرها) بنویس: هر بند یک خبر؛ بگو چه اتفاقی افتاد "
+             "و چرا برای بازار سرمایه، ارز، طلا یا انرژی مهم است. چیزی را که در متن خبر نیامده اضافه نکن و پیش‌بینی نکن. "
+             "می‌توانی منبع را بگویی («به گزارش ایسنا»). تیتر کلی و کوتاه باشد، مثلاً دربارهٔ مهم‌ترین خبر روز.")
+
+
+@DBOS.step()
+async def s_collect_news(org_id: str) -> dict:
+    """Fetch every news source of the organization. One failing source is reported, never a reason to stop."""
+    r = rt()
+    try:
+        cfg = load_research(org_id, r.brand_root)
+    except ResearchError as e:
+        return {"error": str(e)}
+    if cfg is None:
+        return {"error": "این سازمان منبع خبری ندارد (orgs/<org>/research.yaml)"}
+    fetch = r.news_fetcher or (lambda url, foreign: r.fetcher(url))
+    return {"sources": await collect(r.sessions, r.assets, fetch, cfg, r.clock())}
+
+
+@DBOS.step(retries_allowed=True, max_attempts=2, interval_seconds=60)
+async def s_pick_news(org_id: str, run_id: str, focus: str) -> dict:
+    r = rt()
+    brand = load_brand(org_id, r.brand_root)
+    cfg = load_research(org_id, r.brand_root)
+    with r.sessions() as s:
+        items = candidates(s, cfg, brand, r.clock())
+        try:
+            picked = await pick(r.gateway, brand, cfg, items, org_id=org_id, run_id=run_id, focus=focus)
+        except BudgetExceeded as e:
+            return {"error": f"budget: {e}"}
+        except ResearchError as e:
+            return {"error": str(e)}
+        except LLMError as e:
+            if e.retryable:
+                raise
+            return {"error": f"model: {e}"}
+    return {"picked": [list(x) for x in picked], "candidates": len(items)}
+
+
+@DBOS.step()
+def s_news_part(picked: list[list[str]]) -> dict:
+    r = rt()
+    with r.sessions.begin() as s:
+        part = news_part(s, [i for i, _ in picked], {i: w for i, w in picked}, now=r.clock())
+    return {"part": _part_json(part)}
+
+
 @DBOS.step()
 def s_indices(org_id: str, indices_snapshot_id: str | None, fara_snapshot_id: str | None, day_iso: str) -> dict:
     r = rt()
@@ -419,7 +468,8 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
 @DBOS.step()
 def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], chart_points: list[str], destinations: list[list[str]],
               window_minutes: int, risk: str, versions: dict, version: int = 1, supersedes: str | None = None,
-              content_class: str = "market_report", not_before_iso: str | None = None) -> dict:
+              content_class: str = "market_report", not_before_iso: str | None = None,
+              evidence_ids: list[str] | None = None) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     vc = _vc(verified)
@@ -438,12 +488,15 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
             refs.append(DataPointRef(id=p.id, metric=p.metric, subject=p.subject, source_text=p.source_text, value=p.value,
                                      unit=p.unit, as_of=p.as_of, source_id=p.source_id, raw_sha256=raw))
         caption = instagram_caption_text(brand, vc.caption) if vc.caption else None
+        evidence = tuple(EvidenceRef(id=e.id, url=e.url, title=e.title[:300], fetched_at=e.first_seen, content_sha256=e.text_sha256)
+                         for e in (s.get(EvidenceItem, i) for i in evidence_ids or ()) if e is not None)
         pkg = build_multichannel_package(
             brand=brand, run_id=run_id, content_class=content_class, post=vc.post, instagram_caption=caption,
             slides=[AssetRef.model_validate(a) for a in assets], claims=vc.claims, data_points=refs,
             destinations=[tuple(d) for d in destinations], versions=versions, not_before=not_before,
             expires_at=(not_before or now) + timedelta(minutes=window_minutes),
-            risk_level=risk, extra_point_ids=frozenset(chart_points), version=version, supersedes=supersedes)
+            risk_level=risk, extra_point_ids=frozenset(chart_points), version=version, supersedes=supersedes,
+            evidence=evidence)
         store_package(s, pkg, actor=f"workflow:{run_id}")
         run = s.get(Run, run_id)
         run.package_id = pkg.package_id  # the workflow marks it as waiting, together with its approval round
@@ -452,7 +505,8 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
 
 async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, day: str, platforms: list[str], focus: str,
                    dests: list[list[str]], window_minutes: int, owner_note: str | None, attempts_used: int, *,
-                   version: int, supersedes: str | None, task: str = "", publish_at_iso: str | None = None) -> dict:
+                   version: int, supersedes: str | None, task: str = "", publish_at_iso: str | None = None,
+                   evidence_ids: list[str] | None = None) -> dict:
     """One version of the content: write (with a retry on blocking findings), check, review, design, package.
     Returns {"pkg", "findings"} or, when no publishable version came out, {"status", "findings", "detail", "why"}."""
     note = [f"درخواست صاحب رسانه برای نسخهٔ جدید: {owner_note}"] if owner_note else []
@@ -512,10 +566,10 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
     risk = "medium" if any(f["severity"] == "warn" for f in findings) else "low"
     versions = {"workflow": WORKFLOW, "plan": f"{plan.template_id}@{plan.template_version}", "manager_prompt": MANAGER_PROMPT,
                 "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
-                "technical": TECH_V, "fundamental": FUND_V}
+                "technical": TECH_V, "fundamental": FUND_V, "research_prompt": RESEARCH_PROMPT}
     try:
         pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions, version, supersedes,
-                        plan.template_id, publish_at_iso)
+                        plan.template_id, publish_at_iso, evidence_ids)
     except Exception as e:  # noqa: BLE001  e.g. the earlier version is already on a channel
         if supersedes is None:
             raise
@@ -638,6 +692,24 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
             return s_finish(run_id, "needs_input", detail={"message": out["missing"]})
         parts.append(out["part"])
         task = out["task"]
+    evidence_ids: list[str] = []
+    if plan.has("research"):
+        got_news = await s_collect_news(org_id)
+        if "error" in got_news:
+            return s_finish(run_id, "failed", detail={"error": got_news["error"]})
+        failing = [f"{k}: {v}" for k, v in got_news["sources"].items() if v.startswith("خطا")]
+        if failing:
+            data_notes.append(_note("DATA-NEWS", "منبع‌های خبری که جواب ندادند: " + "؛ ".join(failing)[:400]))
+        picked = await s_pick_news(org_id, run_id, str(params.get("focus") or ""))
+        if "error" in picked:
+            return s_finish(run_id, "failed", detail={"error": f"پژوهشگر: {picked['error']}"})
+        if not picked["picked"]:
+            why = f"در {picked['candidates']} خبر تازه، خبر مهمی برای مخاطب پیدا نشد." if picked["candidates"] else \
+                "در این بازه خبر تازه‌ای از منابع نیامد."
+            return s_finish(run_id, "skipped", detail={"reason": why + (" " + "؛ ".join(failing) if failing else "")})
+        parts.append(s_news_part(picked["picked"])["part"])
+        evidence_ids = [i for i, _ in picked["picked"]]
+        task = NEWS_TASK
     if plan.has("fundamental"):
         out = s_fundamental(params.get("fundamental_subject") or params.get("subject"))
         if "missing" in out:
@@ -654,7 +726,8 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
     for round_no in range(1, MAX_REVISIONS + 2):
         made = await _produce(org_id, run_id, plan, report, day, platforms, str(params.get("focus") or ""), dests,
                               window_minutes, owner_note, attempts_used, version=round_no if current is None else current["version"] + 1,
-                              supersedes=None if current is None else current["package_id"], task=task, publish_at_iso=publish_at_iso)
+                              supersedes=None if current is None else current["package_id"], task=task, publish_at_iso=publish_at_iso,
+                              evidence_ids=evidence_ids)
         if "findings" in made:
             made["findings"] = [*data_notes, *(made["findings"] or [])]
         attempts_used += ATTEMPTS_PER_VERSION

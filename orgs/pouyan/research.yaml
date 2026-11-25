@@ -1,0 +1,27 @@
+# منابع کارمند پژوهش (Research Agent) برای «خلاصهٔ خبرهای موثر بر بازار». از news_sources.yaml و sources.yaml نسخهٔ قبلی.
+#
+# type: rss (فید سایت) یا telegram (کانال «عمومی» تلگرام؛ channel = نام کاربری بدون @)
+# foreign: true یعنی این منبع از ایران فقط با VPN باز می‌شود (تلگرام، رسانه‌های خارجی)؛ برنامه آن را از مسیر VPN می‌گیرد.
+# منبعی که جواب ندهد فقط گزارش می‌شود و بقیه کار می‌کنند. برای خاموش کردن یک منبع: enabled: false
+# این نشانی‌ها از محیط توسعه قابل آزمودن نبودند؛ با capture_sources.bat روی کامپیوتر خودتان امتحانشان کنید.
+org_id: pouyan
+
+window_hours: 16     # خبرهای چند ساعت اخیر
+max_candidates: 40   # حداکثر خبرهایی که پژوهشگر از میانشان انتخاب می‌کند
+max_items: 5         # حداکثر خبر در هر پست
+
+importance: >-
+  مصوبه و بخشنامهٔ رسمی، تصمیم یا اظهارنظر مهم مقام‌ها و نهادها (سازمان بورس، بانک مرکزی، دولت)، رویداد یا حرکت قابل‌توجه
+  در بازارها (دلار، طلا، نفت، فلزات، شاخص‌ها)، تحولات سیاسی، نظامی و اقتصادی که روی بازارها اثر می‌گذارد (جنگ، توافق،
+  تحریم، تنگهٔ هرمز، انرژی)، تغییر قوانین و مقررات، و هر خبری که برای سرمایه‌گذار و مدیر شرکت تفاوت ایجاد می‌کند.
+reject: >-
+  خبر تکراری، آموزش و تحلیل عمومی بدون خبر تازه، نظر شخصی، تبلیغ، حاشیه، شایعه و خبر تأییدنشده، خبر یک شرکت یا یک نماد،
+  و هر چیز دربارهٔ صندوق‌ها.
+
+sources:
+  - {id: isna, name: ایسنا, type: rss, url: "https://www.isna.ir/rss"}
+  - {id: mehr, name: خبرگزاری مهر, type: rss, url: "https://www.mehrnews.com/rss"}
+  - {id: irna, name: ایرنا, type: rss, url: "https://www.irna.ir/rss"}
+  - {id: bbc_persian, name: بی‌بی‌سی فارسی, type: rss, url: "https://feeds.bbci.co.uk/persian/rss.xml", foreign: true}
+  - {id: euronews, name: یورونیوز فارسی, type: rss, url: "https://parsi.euronews.com/rss", foreign: true}
+  - {id: betasahm, name: بتا سهم, type: telegram, channel: betasahm1, foreign: true, min_chars: 60}

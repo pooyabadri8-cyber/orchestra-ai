@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 PLATFORMS = ("telegram", "bale", "instagram")
 SECTIONS = ("technical", "fundamental")
 MANDATORY_BEFORE_PUBLISH = ("fact_checker", "compliance_officer", "human_approval")
-CONTENT_SOURCES = ("market_analyst", "technical_analyst", "fundamental_analyst", "knowledge_curator")  # where facts come from
+CONTENT_SOURCES = ("market_analyst", "technical_analyst", "fundamental_analyst", "knowledge_curator", "news_researcher")  # where facts come from
 _ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 

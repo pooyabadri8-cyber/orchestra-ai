@@ -52,7 +52,21 @@ TARGETS = [
     ("tsetmc_inst_effect", "https://cdn.tsetmc.com/api/MarketData/GetInstEffect/0/1/7", "candidate: index effect of stocks"),
     ("tsetmc_sector_overview", "https://cdn.tsetmc.com/api/ClosingPrice/GetIndustryGroupOverview", "candidate: sectors"),
     ("tradersarena_industries", "https://tradersarena.ir/industries", "candidate: industries page"),
+    # stage 6: news sources of the research agent (orgs/pouyan/research.yaml)
+    ("news_sena_home", "https://sena.ir/", "candidate: capital-market news (find its feed)"),
+    ("news_sena_rss", "https://www.sena.ir/rss", "candidate: capital-market news feed"),
 ]
+
+
+def news_targets() -> list[tuple[str, str, str, bool]]:
+    """Every source in orgs/*/research.yaml: (name, url, note, foreign). Foreign ones go through the VPN."""
+    import yaml
+    out = []
+    for f in sorted(Path("orgs").glob("*/research.yaml")):
+        for src in (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get("sources") or []:
+            url = src.get("url") or f"https://t.me/s/{str(src.get('channel', '')).lstrip('@')}"
+            out.append((f"news_{src['id']}", url, f"research source ({f.parent.name})", bool(src.get("foreign"))))
+    return out
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
@@ -76,8 +90,11 @@ async def main() -> int:
     out = Path("captures") / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     index = []
-    async with httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True, trust_env=False) as http:
-        for name, url, note in TARGETS:
+    local = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True, trust_env=False)
+    vpn = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(40, connect=15), follow_redirects=True, trust_env=True)
+    async with local, vpn:
+        for name, url, note, foreign in [(*t, False) for t in TARGETS] + news_targets():
+            http = vpn if foreign else local
             entry = {"name": name, "url": url, "note": note, "fetched_at": datetime.now().astimezone().isoformat()}
             try:
                 r = await http.get(url)

@@ -7,3 +7,9 @@ schedule:
     days: [sat, sun, mon, tue, wed]
     request: "گزارش پایان بازار امروز را برای همهٔ کانال‌ها آماده کن"
     enabled: true
+  # خلاصهٔ خبرهای موثر بر بازار (کارمند پژوهش). پیش از روشن کردن، منبع‌های research.yaml را با capture_sources.bat بیازمایید.
+  - name: news_digest
+    time: "08:30"
+    days: [sat, sun, mon, tue, wed, thu]
+    request: "خلاصهٔ مهم‌ترین خبرهای موثر بر بازار را برای همهٔ کانال‌ها آماده کن"
+    enabled: false

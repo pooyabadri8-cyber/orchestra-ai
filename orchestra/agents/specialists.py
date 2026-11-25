@@ -23,6 +23,9 @@ from ..brand import Brand
 from ..visual.charts import ChartSpec, groups_flow_chart, price_trend_chart
 from .analysis import AnalysisReport, analyze_market_close
 
+import re
+
+FIGURE_REF = re.compile(r"\[\[F:([A-Za-z0-9_]+)\]\]")
 STRONG_FLOW_PCT = 10.0  # net real money above this share of retail trade value is a strong move
 
 
@@ -115,13 +118,16 @@ def compose(snapshot_id: str, parts: list[Part], excluded: tuple[str, ...] = (),
     charts: list[ChartSpec] = []
     n = 0
     for part in parts:
+        keys: dict[str, str] = {}
         for p in part.points:
             if p.key.startswith("D"):
                 points.append(p)
                 continue
             n += 1
+            keys[p.point_id] = f"P{n}"
             points.append(p.model_copy(update={"key": f"P{n}", "label": f"[{part.title}] {p.label}"}))
-        facts += [f"[{part.title}] {f}" for f in part.facts]
+        # a fact may quote a figure as [[F:<point id>]] (news): it becomes that figure's token
+        facts += [f"[{part.title}] " + FIGURE_REF.sub(lambda m: f"{{{{{keys.get(m.group(1), '?')}|as_is}}}}", f) for f in part.facts]
         charts += part.charts
     for p in extra or []:
         points.append(p)

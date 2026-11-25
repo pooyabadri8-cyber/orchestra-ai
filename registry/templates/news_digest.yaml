@@ -1,0 +1,21 @@
+id: news_digest
+version: 1.0.0
+name_fa: خلاصهٔ خبرهای موثر بر بازار
+description: >-
+  یک پست خلاصه از مهم‌ترین خبرهای چند ساعت اخیر که روی بازار سرمایه، ارز، طلا و انرژی اثر می‌گذارند (مصوبه‌ها، تصمیم‌های
+  اقتصادی، تحولات سیاسی و جهانی)؛ از منابع خبری تعیین‌شده، بدون خبر یک نماد یا صندوق. خروجی برای تلگرام، بله و اینستاگرام.
+examples:
+  - مهم‌ترین خبرهای امروز را که روی بازار اثر دارند خلاصه کن
+  - خلاصهٔ خبرهای موثر بر بازار را برای تلگرام آماده کن
+params:
+  - {name: platforms, type: platforms, required: false, default: [telegram, bale, instagram], description: کانال‌های انتشار}
+  - {name: focus, type: text, required: false, description: نکته یا زاویهٔ خاصی که کاربر خواسته (مثلاً فقط انرژی)}
+steps:
+  - {id: research, agent: news_researcher}
+  - {id: write, agent: writer, depends_on: [research]}
+  - {id: verify, agent: fact_checker, depends_on: [write]}
+  - {id: edit, agent: editor, depends_on: [verify]}
+  - {id: comply, agent: compliance_officer, depends_on: [verify]}
+  - {id: design, agent: designer, depends_on: [verify], when: "platform:instagram"}
+  - {id: approve, agent: human_approval, depends_on: [edit, comply, design]}
+  - {id: publish, agent: publisher, depends_on: [approve]}

@@ -47,6 +47,7 @@ def build_multichannel_package(
     slides: list, claims: list[Claim], data_points: list[DataPointRef], destinations: list[tuple[str, str]], versions: dict,
     not_before: datetime | None = None, expires_at: datetime | None = None, risk_level: str = "medium",
     version: int = 1, supersedes: str | None = None, extra_point_ids: frozenset[str] = frozenset(),
+    evidence: tuple = (),
 ) -> PublicationPackage:
     """One package for every channel. Telegram and Bale get the text post; Instagram gets the carousel with its caption.
     `slides`: AssetRef list (already stored, in order). Everything each destination will receive is in the hash."""
@@ -80,7 +81,8 @@ def build_multichannel_package(
                       claim_ids=tuple(sorted({c.claim_id for c in claims}))),
         assets=tuple(slides),
         destinations=tuple(plans),
-        sources=Sources(data_points=tuple(sorted((d for d in data_points if d.id in used), key=lambda d: d.id))),
+        sources=Sources(data_points=tuple(sorted((d for d in data_points if d.id in used), key=lambda d: d.id)),
+                        evidence=tuple(sorted(evidence, key=lambda e: e.id))),
         versions={**versions, "brand": brand.version_tag},
         checks=Checks(risk_level=risk_level),
     )

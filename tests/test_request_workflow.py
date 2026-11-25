@@ -428,3 +428,58 @@ def test_an_unknown_topic_asks_instead_of_writing(engine):
         DBOS.start_workflow(wf.handle_request, "pouyan", "x", DAY, DEST, preset={"template": "topic_post", "params": {"topic": "nope"}})
     assert wait_for_status(rtm.sessions, rid, {"needs_input", "failed"}, timeout=60) == "needs_input"
     assert prov.calls == []
+
+
+def news_runtime(engine, replies):
+    from test_research import OIL, RATE, rss
+    rtm, prov, notifier = runtime(engine, replies)
+
+    async def fetch(url, foreign):
+        if "t.me" in url:
+            from orchestra.data.acquisition import AcquisitionError
+            raise AcquisitionError("blocked", retryable=False)
+        return rss(OIL, RATE)
+    rtm.news_fetcher = fetch
+    return rtm, prov
+
+
+NEWS_DRAFT = {"post": {"hashtag": "#خبر_بازار", "headline": "نفت برنت گران شد",
+                       "paragraphs": ["به گزارش ایسنا، نفت برنت با {{P2|as_is}} افزایش به {{P3|as_is}} رسید.",
+                                      "بانک مرکزی نرخ سود سپرده را {{P4|as_is}} نگه داشت."], "cta": "نظرتان را بنویسید."}}
+
+
+def start_news(request="خلاصهٔ خبرهای موثر بر بازار"):
+    rid = wf.run_id_for("pouyan", request, date(2026, 11, 11))
+    with SetWorkflowID(rid):
+        DBOS.start_workflow(wf.handle_request, "pouyan", request, DAY, DEST,
+                            preset={"template": "news_digest", "params": {"platforms": ["telegram", "bale"]}})
+    return rid
+
+
+def test_news_digest_carries_its_evidence_and_bound_figures(engine):
+    rtm, prov = news_runtime(engine, [{"picks": [{"n": 2, "why": "انرژی"}, {"n": 1, "why": "نرخ سود"}]}, NEWS_DRAFT, CLEAN, CLEAN])
+    rid = start_news()
+    status = wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "skipped"}, timeout=90)
+    with rtm.sessions() as s:
+        assert status == "awaiting_approval", [(c.step_key, (c.response or "")[:60]) for c in s.execute(select(LLMCall).order_by(LLMCall.id)).scalars()]
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        content = json.loads(s.get(PackageRow, run.package_id).content_json)
+        steps = [c.step_key for c in s.execute(select(LLMCall).order_by(LLMCall.id)).scalars()]
+    assert steps == ["research.pick.0", "write.1", "review.editor.1", "review.compliance.1"]
+    assert {e["url"] for e in content["sources"]["evidence"]} == {"https://n.test/0", "https://n.test/1"}
+    figs = {p["source_text"] for p in content["sources"]["data_points"] if p["metric"] == "news.figure"}
+    assert figs == {"۲٫۵ درصد", "۸۰ دلار", "۲۳ درصد"}
+    tg = next(d for d in content["destinations"] if d["platform"] == "telegram")["delivery_plan"][0]["body"]
+    assert "۸۰ دلار" in tg and "۲۳ درصد" in tg
+    assert any(f["rule_id"] == "DATA-NEWS" for f in run.findings)  # the Telegram source did not answer: the owner is told
+    assert "انرژی" in prov.calls[1]  # the researcher's reason reaches the writer
+
+
+def test_no_important_news_is_skipped_without_writing(engine):
+    rtm, prov = news_runtime(engine, [{"picks": []}])
+    rid = start_news("خبرهای امروز")
+    assert wait_for_status(rtm.sessions, rid, {"skipped", "failed", "awaiting_approval"}, timeout=60) == "skipped"
+    with rtm.sessions() as s:
+        assert "خبر مهمی" in s.get(Run, rid).detail["reason"]
+    assert len(prov.calls) == 1

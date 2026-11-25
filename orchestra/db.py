@@ -282,6 +282,23 @@ class ControlJobReport(Base):
     status: Mapped[str] = mapped_column(String(16))
 
 
+class EvidenceItem(Base):
+    """One news item (a feed entry or a channel post) as fetched: the research agent's evidence. The feed's raw bytes
+    are the snapshot; the item's figures are data points of that snapshot (metric news.figure, subject = this id)."""
+
+    __tablename__ = "evidence_items"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # ev_<hash of source and the item's own id>
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_name: Mapped[str] = mapped_column(String(128))
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    text: Mapped[str] = mapped_column(Text)
+    text_sha256: Mapped[str] = mapped_column(String(64))
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(64))
+
+
 class ContentPlanRow(Base):
     """A content calendar proposed by the marketing agent. Approval is bound to `plan_hash`; a revision is a new row
     (the old one becomes superseded), so a button on an older version can never approve the newer one.

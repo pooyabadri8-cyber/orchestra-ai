@@ -1,0 +1,10 @@
+id: news_researcher
+version: 1.0.0
+name_fa: کارمند پژوهش (خبر)
+role: خبرهای تازه را از منابع تعیین‌شده جمع می‌کند، موضوع‌های ممنوع را با کد کنار می‌گذارد و مهم‌ترین‌ها را برای مخاطب انتخاب می‌کند؛ هر عدد خبر را با جمله و منبعش ثبت می‌کند تا نویسنده فقط با توکن به آن ارجاع دهد. خودش خبر نمی‌نویسد.
+autonomy: L1
+entrypoint: orchestra.agents.research:pick
+model_tier: reviewer
+tools: [http_fetch, asset_store]
+inputs: [ResearchConfig]
+outputs: [AnalysisPart, Evidence]

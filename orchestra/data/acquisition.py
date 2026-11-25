@@ -34,12 +34,14 @@ def snapshot_id(source_id: str, fetched_at: datetime, raw_sha256: str) -> str:
     return "snap_" + hashlib.sha256(f"{source_id}|{fetched_at.isoformat()}|{raw_sha256}".encode()).hexdigest()[:24]
 
 
-def http_fetcher(timeout: float = 40.0, user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36") -> Fetcher:
+def http_fetcher(timeout: float = 40.0, user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                 trust_env: bool = False) -> Fetcher:
+    """trust_env=False: Iranian sources, reached directly. True: foreign sites, through the system proxy (VPN)."""
     async def fetch(url: str) -> bytes:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15), follow_redirects=True,
                                          headers={"User-Agent": user_agent, "Accept-Language": "fa,en;q=0.8"},
-                                         trust_env=False) as http:  # Iranian sources: no foreign proxy
+                                         trust_env=trust_env) as http:
                 r = await http.get(url)
         except httpx.HTTPError as e:
             raise AcquisitionError(f"دریافت ناموفق ({type(e).__name__})", retryable=True) from e
