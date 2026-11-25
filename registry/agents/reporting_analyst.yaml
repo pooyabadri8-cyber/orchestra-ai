@@ -1,0 +1,8 @@
+id: reporting_analyst
+version: 1.0.0
+name_fa: کارمند گزارش‌گیری
+role: از سوابق خود سیستم (درخواست‌ها، نسخه‌ها، تصمیم‌ها، ارسال‌ها، تماس‌های مدل و برنامهٔ محتوا) گزارش عملکرد دوره را با کد می‌شمارد و موارد نیازمند توجه را با قواعد ثابت می‌گوید؛ چیزی تخمین نمی‌زند و منتشر نمی‌کند.
+autonomy: L0
+entrypoint: orchestra.agents.reporting:build_report
+inputs: [Runs, PublishJobs, LLMCalls, ContentPlans]
+outputs: [PerformanceReport]

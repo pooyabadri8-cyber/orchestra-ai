@@ -40,6 +40,7 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")  # date.weekday() order
 ANGLE_MAX = 160
 MAX_REVISIONS = 3
+PLAN_LATE = timedelta(hours=2)  # an item whose time passed this long ago (the control bot was off) is not started any more
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _DIGIT = re.compile(r"[0-9۰-۹٠-٩]")
 

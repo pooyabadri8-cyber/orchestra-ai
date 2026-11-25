@@ -16,6 +16,7 @@
     python -m orchestra.cli pause / resume --org pouyan
     python -m orchestra.cli plan [--start 2026-11-28]   the marketing agent proposes the content calendar
     python -m orchestra.cli plan-approve PLAN_ID / plan-reject PLAN_ID   (items run while `serve` is on)
+    python -m orchestra.cli report [--days 7] [--end 2026-11-28]           the team's performance report
 """
 from __future__ import annotations
 
@@ -587,6 +588,13 @@ def cmd_serve(cfg: Settings, a) -> None:
         policy = mk.load_policy(a.org, cfg.orgs_dir)
     except mk.PlanError as e:
         sys.exit(f"سیاست محتوا (marketing.yaml) خراب است: {e}")
+    from .agents import reporting as rp
+    try:
+        weekly = rp.load_weekly(a.org, cfg.orgs_dir)
+    except (ValueError, yaml.YAMLError) as e:
+        sys.exit(str(e))
+    if weekly:
+        print(f"گزارش عملکرد: هر {weekly.day} ساعت {weekly.at[0]:02d}:{weekly.at[1]:02d}؛ یا /report در ربات.", flush=True)
     if policy and policy.auto_propose:
         print(f"برنامهٔ محتوا: پیشنهاد خودکار هر {policy.auto_propose.day} ساعت {policy.auto_propose.time}؛ یا /plan در ربات.", flush=True)
     try:
@@ -648,6 +656,15 @@ def cmd_plan_decide(cfg: Settings, a, decision: str, actor: str) -> None:
     print("✅ برنامه تأیید شد." if decision == "approved" else "❌ برنامه رد شد.")
 
 
+def cmd_report(cfg: Settings, a) -> None:
+    from .agents import reporting as rp
+    from .db import utcnow
+    now = utcnow()
+    end = datetime.fromisoformat(a.end).date() if a.end else now.astimezone(TEHRAN).date()
+    with _sessions(cfg)() as s:
+        print(rp.report_text(rp.build_report(s, a.org, end_day=end, days=a.days, now=now, root=cfg.orgs_dir)))
+
+
 def cmd_jobs(cfg: Settings, a) -> None:
     with _sessions(cfg)() as s:
         for j in s.execute(select(PublishJob).order_by(PublishJob.id.desc()).limit(30)).scalars():
@@ -681,6 +698,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--note"); p.add_argument("--revise", type=int)
     p = sub.add_parser("plan-approve"); p.add_argument("plan_id", type=int)
     p = sub.add_parser("plan-reject"); p.add_argument("plan_id", type=int)
+    p = sub.add_parser("report"); p.add_argument("--org", default="pouyan"); p.add_argument("--days", type=int, default=7)
+    p.add_argument("--end")
     a = ap.parse_args(argv)
     if a.cmd != "init":
         create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
@@ -714,6 +733,8 @@ def main(argv: list[str] | None = None) -> int:
         print("ثبت شد." if _publisher(cfg).confirm_sent(a.job_id, actor) else "این کار در وضعیت «نامعلوم» نیست.")
     elif a.cmd == "retry":
         print("دوباره در صف قرار گرفت." if _publisher(cfg).requeue(a.job_id, actor) else "این کار قابل ارسال دوباره نیست.")
+    elif a.cmd == "report":
+        cmd_report(cfg, a)
     elif a.cmd == "plan":
         cmd_plan(cfg, a, actor)
     elif a.cmd in ("plan-approve", "plan-reject"):

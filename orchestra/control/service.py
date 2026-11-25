@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..assets import AssetStore
 from ..agents import marketing as mk
+from ..agents import reporting as rp
 from ..db import (
     ContentPlanRow, ControlJobReport, ControlPrompt, ControlRequest, ControlState, OrgControl, PackageRow, PublishJob, Run,
     utcnow,
@@ -54,7 +55,7 @@ JOB_FINAL = ("confirmed", "failed", "unknown", "dead", "blocked", "expired", "ca
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")  # date.weekday() order
 FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 SCHEDULE_WINDOW = timedelta(hours=4)
-PLAN_LATE = timedelta(hours=2)  # a plan item whose time passed this long ago (the bot was off) is not started any more
+PLAN_LATE = mk.PLAN_LATE
 
 HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 
@@ -72,6 +73,7 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /retry شماره — دوباره بفرست
 /plan — برنامهٔ محتوای هفتهٔ بعد (/plan فردا: از فردا)
 /plans — برنامهٔ تأییدشده و پست‌های پیش رو
+/report — گزارش عملکرد هفت روز گذشته (/report امروز، /report 30)
 /cancel — انصراف از نوشتن توضیح اصلاح"""
 
 
@@ -213,7 +215,7 @@ class ControlService:
     def tick(self) -> None:
         self.read_updates()
         self.run_schedule()
-        for step in (self.auto_propose_plan, self.run_plans):  # a broken plan file must not stop approvals or publishing
+        for step in (self.auto_propose_plan, self.run_plans, self.auto_report):  # never stops approvals or publishing
             try:
                 step()
             except BotApiError:
@@ -322,6 +324,9 @@ class ControlService:
                            actor=actor)
         elif word == "/plans":
             self._say(chat, self.plans_text())
+        elif word == "/report":
+            days = 1 if rest in ("امروز", "today") else (_num(rest) or 7)
+            self._say(chat, self.report_text(min(days, rp.MAX_DAYS)))
         elif word in ("/pause", "/resume"):
             self.engine.set_paused(self.org_id, word == "/pause", actor)
             self._say(chat, "⏸ همهٔ انتشارها متوقف شد." if word == "/pause" else "▶️ انتشار ادامه پیدا کرد.")
@@ -717,6 +722,29 @@ class ControlService:
                 mark = "▶️ شروع شده" if f"plan:{row.id}:{n}" in started else ("⏭ گذشت" if at + PLAN_LATE <= now else "⏳")
                 lines.append(f"  {mark} {mk.long_date(it.day)} {it.time.translate(mk.FA)} — {it.pillar}/{it.topic}")
         return "\n".join(lines) or "برنامهٔ فعالی نیست. /plan را بزنید."
+
+    # ------------------------------------------------------------------ performance report (reporting agent)
+
+    def report_text(self, days: int) -> str:
+        now = self.clock()
+        with self.sessions() as s:
+            rep = rp.build_report(s, self.org_id, end_day=now.astimezone(TEHRAN).date(), days=days, now=now, root=self.orgs_root)
+        return rp.report_text(rep)
+
+    def auto_report(self) -> None:
+        """The weekly report (orgs/<org>/reporting.yaml), once per day it is due."""
+        if not self.owners:
+            return
+        weekly = rp.load_weekly(self.org_id, self.orgs_root)
+        now = self.clock().astimezone(TEHRAN)
+        if weekly is None or DAYS[now.weekday()] != weekly.day:
+            return
+        begin = now.replace(hour=weekly.at[0], minute=weekly.at[1], second=0, microsecond=0)
+        key = f"report:{now.date().isoformat()}"
+        if not begin <= now < begin + SCHEDULE_WINDOW or self._state(key):
+            return
+        self._set_state(key, "sent")
+        self._say(None, self.report_text(weekly.days))
 
     # ------------------------------------------------------------------ publish reports
 
