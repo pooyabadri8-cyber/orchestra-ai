@@ -143,3 +143,81 @@ def test_pouyan_research_config():
     cfg = load_research("pouyan")
     assert {s.id for s in cfg.sources} >= {"isna", "bbc_persian", "betasahm"}
     assert next(s for s in cfg.sources if s.id == "betasahm").address == "https://t.me/s/betasahm1"
+
+
+# ------------------------------------------------------------------ real feeds (captured 2026-11-25 with capture_sources)
+
+from pathlib import Path  # noqa: E402
+
+REAL = {n: (Path(__file__).parent / "fixtures" / f"news_{n}_real.xml").read_bytes() for n in ("sena", "isna", "mehr", "irna")}
+REAL_NOW = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
+REAL_CFG = ResearchConfig.model_validate({"org_id": "pouyan", "max_candidates": 40, "sources": [
+    {"id": n, "name": n, "type": "rss", "url": f"https://{n}.test/rss"} for n in REAL]})
+
+
+def test_real_feeds_parse():
+    for name, raw in REAL.items():
+        items = parse_feed(raw)
+        assert len(items) == 30 and all(i.published and i.url.startswith("https://") and i.title for i in items), name
+
+
+def test_a_figure_partly_in_words_is_kept_whole():
+    wool = next(i for i in parse_feed(REAL["isna"]) if "پشم" in i.title)
+    texts = [f.text for f in figures(wool.title + "\n" + wool.text)]
+    assert "یک‌هزار و ۴۵ تن" in texts and "۴۵ تن" not in texts  # «۴۵ تن» alone would be a wrong figure (1045 t)
+    fee = next(i for i in parse_feed(REAL["mehr"]) if "اعتکاف" in i.title)
+    assert [f.text for f in figures(fee.text)] == ["یک میلیون و ۵۰۰ هزار تومانی"]
+
+
+def test_every_real_sentence_can_be_quoted_without_an_unbound_figure(sessions, assets):
+    """The writer may copy any evidence sentence as it is: no figure in it may be left outside a token."""
+    from orchestra.content.numbers import render, scan
+
+    async def fetch(url, foreign):
+        return REAL[url.split("//")[1].split(".")[0]]
+    asyncio.run(collect(sessions, assets, fetch, REAL_CFG, REAL_NOW))
+    with sessions() as s:
+        ids = [e.id for e in s.query(EvidenceItem)]
+    assert len(ids) == 120
+    for start in range(0, len(ids), 10):
+        with sessions.begin() as s:
+            part = news_part(s, ids[start:start + 10], now=REAL_NOW)
+        rep = compose("news", [part])
+        points = rep.by_key()
+        for fact in rep.facts:
+            out, _, spans = render(fact, points)
+            assert scan(out, spans) == [], (fact[:200], scan(out, spans))
+
+
+def test_real_candidates_keep_a_share_for_every_source(sessions, assets):
+    async def fetch(url, foreign):
+        return REAL[url.split("//")[1].split(".")[0]]
+    asyncio.run(collect(sessions, assets, fetch, REAL_CFG, REAL_NOW))
+    with sessions() as s:
+        got = candidates(s, REAL_CFG, BRAND, REAL_NOW)
+    by = {}
+    for c in got:
+        by[c.source_id] = by.get(c.source_id, 0) + 1
+    assert len(got) == 40 and by["sena"] >= 10  # Sena covers two days; the agencies only their last half hour
+
+
+def test_news_is_collected_on_an_interval(sessions, assets, tmp_path):
+    from orchestra.agents.research import NewsCollector
+    (tmp_path / "pouyan").mkdir()
+    (tmp_path / "pouyan" / "research.yaml").write_text(
+        "org_id: pouyan\ncollect_every_minutes: 20\nsources:\n  - {id: sena, name: سنا, type: rss, url: 'https://sena.test/rss'}\n",
+        encoding="utf-8")
+    calls = []
+
+    async def fetch(url, foreign):
+        calls.append(url)
+        return REAL["sena"]
+    from conftest import Clock
+    clock = Clock(REAL_NOW)
+    c = NewsCollector("pouyan", tmp_path, sessions, assets, fetch, clock)
+    c.tick()
+    clock.advance(10 * 60)
+    c.tick()
+    clock.advance(11 * 60)
+    c.tick()
+    assert len(calls) == 2 and c.last == {"sena": "0 تازه از 30"}

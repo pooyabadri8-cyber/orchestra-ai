@@ -224,8 +224,8 @@ class ControlService:
         for t in self.extra_ticks:
             try:
                 t()
-            except Exception as e:  # noqa: BLE001  the intake bot being unreachable must not stop the control bot
-                log.warning("intake bot: %s", e)
+            except Exception as e:  # noqa: BLE001  a background task failing must never stop the control bot
+                log.warning("background task (intake bot or news collection): %s", e)
         for step in (self.auto_propose_plan, self.run_plans, self.auto_report, self.remind_leads):  # never stops approvals or publishing
             try:
                 step()

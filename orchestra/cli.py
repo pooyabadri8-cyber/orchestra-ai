@@ -542,6 +542,8 @@ def cmd_serve(cfg: Settings, a) -> None:
     """The always-on mode: control bot + daily schedule + publisher, in one process."""
     import logging
 
+    from .db import utcnow
+
     from .control.botapi import BotApi
     from .control.service import ControlService, load_schedule
     from .workflows import market_close as _mc  # noqa: F401  (both workflows registered: waiting runs resume here)
@@ -588,6 +590,14 @@ def cmd_serve(cfg: Settings, a) -> None:
                          assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds,
                          orgs_root=cfg.orgs_dir)
     _attach_intake(cfg, a.org, svc, base_for={"telegram": cfg.telegram_api_base, "bale": cfg.bale_api_base})
+    from .agents.research import NewsCollector, ResearchError, load_research
+    try:
+        news_cfg = load_research(a.org, cfg.orgs_dir)
+    except ResearchError as e:
+        sys.exit(f"منبع‌های خبری (research.yaml) خراب است: {e}")
+    if news_cfg is not None:
+        svc.extra_ticks.append(NewsCollector(a.org, cfg.orgs_dir, rtm.sessions, rtm.assets, rtm.news_fetcher, utcnow).tick)
+        print(f"خبرها هر {news_cfg.collect_every_minutes} دقیقه از {len([x for x in news_cfg.sources if x.enabled])} منبع جمع می‌شوند.", flush=True)
     print(f"ربات کنترل روشن است ({cfg.control_platform}). برای خاموش کردن، همین پنجره را ببندید.", flush=True)
     if not owners:
         print("هنوز هیچ شناسه‌ای مجاز نیست: به ربات یک پیام بدهید تا شناسه‌تان را بگوید، بعد آن را در ORCHESTRA_CONTROL_CHAT_IDS بنویسید.", flush=True)

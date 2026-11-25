@@ -87,6 +87,7 @@ class ResearchConfig(BaseModel):
     window_hours: int = Field(16, ge=1, le=96)
     max_candidates: int = Field(40, ge=5, le=80)
     max_items: int = Field(5, ge=1, le=10)
+    collect_every_minutes: int = Field(20, ge=5, le=24 * 60)
     importance: str = ""
     reject: str = ""
     sources: tuple[NewsSource, ...] = Field(min_length=1)
@@ -153,12 +154,13 @@ def _key(title: str) -> str:
 
 def candidates(session: Session, cfg: ResearchConfig, brand: Brand, now: datetime) -> list[EvidenceItem]:
     """Recent items (by publication time, or first seen when the source gives none), newest first; items about a
-    forbidden topic (funds) are removed here, in code; the same headline from two sources is kept once."""
+    forbidden topic (funds) are removed here, in code; the same headline from two sources is kept once. Each source
+    gets an equal share first, so a busy general agency cannot push a specialist source out; then the rest fill up."""
     since = now - timedelta(hours=cfg.window_hours)
     rows = session.execute(select(EvidenceItem).where(EvidenceItem.first_seen >= since - timedelta(hours=48))
                            .order_by(EvidenceItem.first_seen.desc())).scalars().all()
-    names = {s.id for s in cfg.sources}
-    seen, out = set(), []
+    names = {s.id for s in cfg.sources if s.enabled}
+    seen, pool = set(), []
     for r in sorted(rows, key=lambda r: r.published_at or r.first_seen, reverse=True):
         when = r.published_at or r.first_seen
         if r.source_id not in names or not since <= when <= now + timedelta(minutes=10):
@@ -169,10 +171,17 @@ def candidates(session: Session, cfg: ResearchConfig, brand: Brand, now: datetim
         if k in seen:
             continue
         seen.add(k)
-        out.append(r)
-        if len(out) >= cfg.max_candidates:
-            break
-    return out
+        pool.append(r)
+    share = -(-cfg.max_candidates // max(len(names), 1))
+    taken: dict[str, int] = {}
+    first = []
+    for r in pool:
+        if taken.get(r.source_id, 0) < share:
+            taken[r.source_id] = taken.get(r.source_id, 0) + 1
+            first.append(r)
+    rest = [r for r in pool if r not in first]
+    chosen = (first + rest)[:cfg.max_candidates]
+    return sorted(chosen, key=lambda r: r.published_at or r.first_seen, reverse=True)
 
 
 # ------------------------------------------------------------------ pick (the model)
@@ -241,11 +250,26 @@ async def pick(gateway: Gateway, brand: Brand, cfg: ResearchConfig, items: list[
 # ------------------------------------------------------------------ evidence for the writer
 
 
+LETTERS = ("الف", "ب", "پ", "ت", "ث", "ج", "چ", "ح", "خ", "د")
+
+
+def when_fa(when: datetime, now: datetime) -> str:
+    """'امروز صبح', 'دیروز عصر': the time of an item in words, so the evidence carries no figure outside a token."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Asia/Tehran")
+    w, n = when.astimezone(tz), now.astimezone(tz)
+    days = (n.date() - w.date()).days
+    day = {0: "امروز", 1: "دیروز"}.get(days, "چند روز پیش")
+    part = "بامداد" if w.hour < 6 else "صبح" if w.hour < 12 else "ظهر" if w.hour < 15 else "عصر" if w.hour < 19 else "شب"
+    return f"{day} {part}"
+
+
 def news_part(session: Session, evidence_ids: list[str], whys: dict[str, str] | None = None, *, now: datetime) -> Part:
     """The chosen items as the writer's evidence. Every figure in an item becomes a data point and, in the item's text,
     a reference ([[F:<point id>]]) that the composer turns into that point's token."""
     part = Part(title="خبرها")
-    for i, eid in enumerate(evidence_ids, 1):
+    for i, eid in enumerate(evidence_ids[:len(LETTERS)]):
+        letter = LETTERS[i]
         ev = session.get(EvidenceItem, eid)
         if ev is None:
             continue
@@ -257,17 +281,50 @@ def news_part(session: Session, evidence_ids: list[str], whys: dict[str, str] | 
                 session.add(DataPointRow(id=pid, snapshot_id=ev.snapshot_id, source_id=f"news:{ev.source_id}", metric="news.figure",
                                          subject=ev.id, rank=k, value=f.value, unit="text", decimals=0, scale="",
                                          source_text=f.text[:64], as_of=ev.published_at or ev.first_seen))
-            part.points.append(BoundPoint(key="P0", point_id=pid, metric="news.figure", label=f"خبر {i}: «{f.sentence}»",
+            part.points.append(BoundPoint(key="P0", point_id=pid, metric="news.figure", label=f"خبر «{letter}»: «{f.sentence}»",
                                           value=f.value, unit="text", decimals=0, formats=("as_is",), text=f.text))
         quoted = body
         for k, f in reversed(list(enumerate(figs, 1))):  # a private-use character marks each figure for now
             quoted = quoted[:f.start] + chr(0xE000 + k) + quoted[f.end:]
         quoted = re.sub(r"[0-9۰-۹٠-٩]+", "…", quoted)  # a figure past the limit is not left for the writer to copy by hand
         quoted = re.sub("[\ue000-\ue0ff]", lambda m: f"[[F:{point_id(ev.snapshot_id, 'news.figure', ev.id, ord(m.group()) - 0xE000)}]]", quoted)
-        when = (ev.published_at or ev.first_seen).isoformat(timespec="minutes")
         why = (whys or {}).get(eid)
-        part.facts.append(f"خبر {i} ({ev.source_name}، {when}){' — چرا مهم است: ' + why if why else ''}:\n{' '.join(quoted.split())}")
+        if why and re.search(r"[0-9۰-۹٠-٩]", why):
+            why = ""  # the researcher's reason is the model's words: it may not bring a figure in
+        when = when_fa(ev.published_at or ev.first_seen, now)
+        part.facts.append(f"خبر «{letter}» ({ev.source_name}، {when}){' — چرا مهم است: ' + why if why else ''}:\n{' '.join(quoted.split())}")
     session.flush()
     if part.points or part.facts:
         part.facts.append("هر عدد خبرها را فقط با همان توکن کنارش بنویس (واحدش در خود توکن است)؛ عددی که توکن ندارد ننویس.")
     return part
+
+
+class NewsCollector:
+    """Collects news every `collect_every_minutes` while the control bot runs. Some feeds hold only the last half hour,
+    so collecting only when a digest is written would miss most of the night's news."""
+
+    def __init__(self, org_id: str, root, sessions, assets: AssetStore, fetch: NewsFetcher, clock):
+        self.org_id, self.root, self.sessions, self.assets, self.fetch, self.clock = org_id, root, sessions, assets, fetch, clock
+        self.last: dict[str, str] = {}
+
+    def tick(self) -> None:
+        import asyncio
+        import logging
+
+        from ..db import ControlState
+        cfg = load_research(self.org_id, self.root)
+        if cfg is None:
+            return
+        now = self.clock()
+        key = f"news:{self.org_id}:last_collect"
+        with self.sessions() as s:
+            row = s.get(ControlState, key)
+        if row is not None and now - datetime.fromisoformat(row.value) < timedelta(minutes=cfg.collect_every_minutes):
+            return
+        with self.sessions.begin() as s:  # recorded first: a failing round is not retried every few seconds
+            s.merge(ControlState(key=key, value=now.isoformat()))
+        status = asyncio.run(collect(self.sessions, self.assets, self.fetch, cfg, now))
+        failed = {k: v for k, v in status.items() if v.startswith("خطا")}
+        if failed:
+            logging.getLogger("orchestra.research").warning("news sources did not answer: %s", failed)
+        self.last = status

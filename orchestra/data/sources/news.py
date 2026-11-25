@@ -18,6 +18,7 @@ from email.utils import parsedate_to_datetime
 
 from bs4 import BeautifulSoup
 
+from ...content.numbers import NUMBER_WORDS, WORD_FIGURE
 from .base import FA_DIGITS, ParseError
 
 PARSER_FEED = "news_feed@1"
@@ -137,8 +138,13 @@ _D = r"[0-9۰-۹٠-٩]"
 UNITS = ("درصد", "٪", "%", "دلار", "یورو", "درهم", "یوان", "تومان", "ریال", "همت", "هزار", "میلیون", "میلیارد", "هزارمیلیارد",
          "تریلیون", "بشکه", "تن", "اونس", "انس", "واحد", "برابر", "سنت", "گرم", "مثقال", "کیلوگرم", "مگاوات", "متر")
 _UNIT = "|".join(sorted((re.escape(u) for u in UNITS), key=len, reverse=True))
-FIGURE = re.compile(rf"(?<![\w{_D[1:-1]}])[-−+]?{_D}+(?:[.,٫٬/]{_D}+)*(?:\s*(?:{_UNIT})(?![\w])){{0,3}}")
+_NW = NUMBER_WORDS
+_Z = "[\\s\u200c]"
+# a leading part in words joined by «و»: «یک‌هزار و ۴۵ تن», «یک میلیون و ۵۰۰ هزار تومانی» (without it the figure is wrong)
+_WORDS_BEFORE = rf"(?:(?:{_NW})(?:{_Z}*(?:هزار|میلیون|میلیارد))?{_Z}+و{_Z}+)*"
+FIGURE = re.compile(rf"(?<![\w])(?:{_WORDS_BEFORE})[-−+]?{_D}+(?:[.,٫٬/]{_D}+)*(?:{_Z}*(?:{_UNIT})ی?(?![\w])){{0,3}}")
 _LATIN = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+_MORE_UNITS = re.compile(rf"(?:{_Z}*(?:{_UNIT})ی?(?![\w]))+")
 _END = re.compile(r"[.!?؟](?=\s|$)|\n|؛")  # a sentence ends here (a decimal point is not an end)
 
 
@@ -161,16 +167,26 @@ class Figure:
 
 
 def figures(text: str, limit: int = 12) -> list[Figure]:
+    """Every figure, in order: with digits (and any leading part in words), and written only in words («یک میلیون
+    تومان», «سه درصد»: the checker treats those as figures too). `value` is the number when it is plain digits, 0 when
+    part of it is in words (records only: a post always shows `text`)."""
+    found = [(m.start(), m.end(), True) for m in FIGURE.finditer(text)]
+    spans = [(a, b) for a, b, _ in found]
+    for m in WORD_FIGURE.finditer(text):
+        if not any(a < m.end() and m.start() < b for a, b in spans):
+            more = _MORE_UNITS.match(text, m.end())
+            found.append((m.start(), more.end() if more else m.end(), False))
     out = []
-    for m in FIGURE.finditer(text):
-        raw = m.group(0).strip()
+    for start, end, digits in sorted(found):
+        raw = text[start:end].strip()
         shown = re.sub(r"\s+", " ", raw).translate(_LATIN).replace("%", "٪").replace("−", "-")
         shown = re.sub(r"(?<=[۰-۹])\.(?=[۰-۹])", "٫", re.sub(r"(?<=[۰-۹]),(?=[۰-۹]{3})", "٬", shown))
-        a = max((e.end() for e in _END.finditer(text, 0, m.start())), default=0)
-        nxt = _END.search(text, m.end())
+        a = max((e.end() for e in _END.finditer(text, 0, start)), default=0)
+        nxt = _END.search(text, end)
         b = nxt.start() if nxt else len(text)
         sentence = " ".join(text[a:b].split())[:220]
-        out.append(Figure(shown, _value(raw), m.start(), m.end(), sentence))
+        plain = digits and not re.match(rf"(?:{_NW})", raw)
+        out.append(Figure(shown, _value(raw) if plain else 0.0, start, start + len(text[start:end].rstrip()), sentence))
         if len(out) >= limit:
             break
     return out

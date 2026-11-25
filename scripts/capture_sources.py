@@ -51,7 +51,7 @@ TARGETS = [
     ("fipiran_market", "https://www.fipiran.com/Market", "candidate: market page"),
     ("tsetmc_inst_effect", "https://cdn.tsetmc.com/api/MarketData/GetInstEffect/0/1/7", "candidate: index effect of stocks"),
     ("tsetmc_sector_overview", "https://cdn.tsetmc.com/api/ClosingPrice/GetIndustryGroupOverview", "candidate: sectors"),
-    ("tradersarena_industries", "https://tradersarena.ir/industries", "candidate: industries page"),
+    ("tradersarena_industries", "https://tradersarena.ir/extras/industries", "candidate: industries page"),
     # stage 6: news sources of the research agent (orgs/pouyan/research.yaml)
     ("news_sena_home", "https://sena.ir/", "candidate: capital-market news (find its feed)"),
     ("news_sena_rss", "https://www.sena.ir/rss", "candidate: capital-market news feed"),
