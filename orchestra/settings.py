@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # socks5://127.0.0.1:10808. Empty: the proxy Windows advertises (System Proxy), if any.
     foreign_proxy: str = ""
 
+    # backups (orchestra/backup.py): best on another disk, a USB drive, or a folder OneDrive/Google Drive syncs
+    backup_dir: Path = Path("backups")
+    backup_time: str = "23:30"  # Tehran time, every night while the control bot runs (or as soon as it starts, if missed)
+    backup_keep_days: int = 14
+    backup_include_env: bool = False  # .env holds tokens and keys: keep it out of a backup folder that is synced online
+
     # publishing
     max_publish_attempts: int = 4
     retry_delays_seconds: list[int] = [30, 120, 600]

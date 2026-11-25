@@ -18,6 +18,7 @@
     python -m orchestra.cli plan-approve PLAN_ID / plan-reject PLAN_ID   (items run while `serve` is on)
     python -m orchestra.cli report [--days 7] [--end 2026-11-28]           the team's performance report
     python -m orchestra.cli leads [ID --stage contacted]                    financing leads (CRM)
+    python -m orchestra.cli backup / restore [FOLDER]                       backups of the databases, images and settings
 """
 from __future__ import annotations
 
@@ -591,6 +592,10 @@ def cmd_serve(cfg: Settings, a) -> None:
                          assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds,
                          orgs_root=cfg.orgs_dir)
     _attach_intake(cfg, a.org, svc, base_for={"telegram": cfg.telegram_api_base, "bale": cfg.bale_api_base})
+    from .backup import NightlyBackup
+    svc.extra_ticks.append(NightlyBackup(sessions=rtm.sessions, clock=utcnow, at=cfg.backup_time,
+                                         tell=lambda text: svc._say(None, text), **_backup_kw(cfg)).tick)
+    print(f"پشتیبان‌گیری: هر شب ساعت {cfg.backup_time} در {cfg.backup_dir} (۱۴ روز آخر نگه داشته می‌شود).", flush=True)
     from .agents.research import NewsCollector, ResearchError, load_research
     try:
         news_cfg = load_research(a.org, cfg.orgs_dir)
@@ -731,6 +736,65 @@ def cmd_leads(cfg: Settings, a, actor: str) -> None:
         print(f"#{x.id} [{crm_cfg.stage_fa(x.stage)}] {x.created_at.astimezone(TEHRAN):%Y-%m-%d %H:%M} {fields}")
 
 
+def _backup_kw(cfg: Settings) -> dict:
+    return {"project": Path.cwd(), "backup_dir": cfg.backup_dir, "database_url": cfg.database_url,
+            "system_database_url": cfg.system_database_url, "asset_dir": cfg.asset_dir, "orgs_dir": cfg.orgs_dir,
+            "keep_days": cfg.backup_keep_days, "include_env": cfg.backup_include_env}
+
+
+def cmd_backup(cfg: Settings, a) -> None:
+    from .backup import BackupError, run_backup
+    from .db import ControlState, utcnow
+    now = utcnow()
+    try:
+        res = run_backup(now=now, **_backup_kw(cfg))
+    except (BackupError, OSError) as e:
+        sys.exit(f"پشتیبان گرفته نشد: {e}")
+    with _sessions(cfg).begin() as s:
+        s.merge(ControlState(key="backup:last", value=now.isoformat()))
+        s.merge(ControlState(key="backup:last_folder", value=str(res.folder)))
+    size = sum(res.files.values())
+    print(f"💾 پشتیبان گرفته شد: {res.folder}\n   {len(res.files)} فایل، {size / 1e6:.1f} مگابایت؛ {res.new_assets} تصویر تازه")
+    if res.counts:
+        print("   " + "، ".join(f"{k}: {v}" for k, v in res.counts.items()))
+    for w in res.warnings:
+        print(f"⚠️ {w}")
+
+
+def cmd_restore(cfg: Settings, a) -> None:
+    from .backup import BackupError, backups, restore, verify
+    from .db import utcnow
+    root = cfg.backup_dir if cfg.backup_dir.is_absolute() else Path.cwd() / cfg.backup_dir
+    if not a.folder:
+        found = backups(root)
+        if not found:
+            sys.exit(f"هیچ پشتیبانی در {root} نیست.")
+        print("پشتیبان‌ها (قدیمی به جدید):")
+        for d in found:
+            print(f"  {d.name}")
+        print(f"\nبرای برگرداندن: python -m orchestra.cli restore {found[-1].name}")
+        return
+    folder = Path(a.folder) if Path(a.folder).is_absolute() else root / a.folder
+    lock = _single_instance(Path("data") / "control_bot.lock")
+    if lock is None:
+        sys.exit("ربات کنترل روشن است؛ اول پنجره‌اش را ببندید، بعد برگردانید.")
+    try:
+        manifest = verify(folder)
+    except BackupError as e:
+        sys.exit(f"این پشتیبان سالم نیست و برگردانده نشد: {e}")
+    print(f"پشتیبان {folder.name} سالم است ({manifest.get('counts', {})}).")
+    if not a.yes and input("پایگاه‌دادهٔ فعلی کنار گذاشته و این پشتیبان جایش گذاشته شود؟ (بنویسید yes): ").strip().lower() != "yes":
+        sys.exit("انصراف.")
+    try:
+        done = restore(folder, project=Path.cwd(), database_url=cfg.database_url, system_database_url=cfg.system_database_url,
+                       asset_dir=cfg.asset_dir, now=utcnow())
+    except (BackupError, OSError) as e:
+        sys.exit(f"برگرداندن کامل نشد: {e}")
+    for line in done:
+        print(f"✅ {line}")
+    print("فایل‌های قبلی با پسوند .before-restore-... در پوشهٔ data مانده‌اند.")
+
+
 def cmd_jobs(cfg: Settings, a) -> None:
     with _sessions(cfg)() as s:
         for j in s.execute(select(PublishJob).order_by(PublishJob.id.desc()).limit(30)).scalars():
@@ -764,12 +828,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--note"); p.add_argument("--revise", type=int)
     p = sub.add_parser("plan-approve"); p.add_argument("plan_id", type=int)
     p = sub.add_parser("plan-reject"); p.add_argument("plan_id", type=int)
+    sub.add_parser("backup")
+    p = sub.add_parser("restore"); p.add_argument("folder", nargs="?"); p.add_argument("--yes", action="store_true")
     p = sub.add_parser("leads"); p.add_argument("--org", default="pouyan"); p.add_argument("lead_id", type=int, nargs="?")
     p.add_argument("--stage")
     p = sub.add_parser("report"); p.add_argument("--org", default="pouyan"); p.add_argument("--days", type=int, default=7)
     p.add_argument("--end")
     a = ap.parse_args(argv)
-    if a.cmd != "init":
+    if a.cmd not in ("init", "restore"):  # restore must not hold the database open (Windows cannot rename an open file)
         create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
         _sync_destinations(cfg)  # edits to orgs/<org>/destinations.yaml take effect on the next command
     actor = f"user:{os.environ.get('USERNAME') or os.environ.get('USER') or 'owner'}"
@@ -801,6 +867,10 @@ def main(argv: list[str] | None = None) -> int:
         print("ثبت شد." if _publisher(cfg).confirm_sent(a.job_id, actor) else "این کار در وضعیت «نامعلوم» نیست.")
     elif a.cmd == "retry":
         print("دوباره در صف قرار گرفت." if _publisher(cfg).requeue(a.job_id, actor) else "این کار قابل ارسال دوباره نیست.")
+    elif a.cmd == "backup":
+        cmd_backup(cfg, a)
+    elif a.cmd == "restore":
+        cmd_restore(cfg, a)
     elif a.cmd == "leads":
         if a.stage and a.lead_id is None:
             sys.exit("شمارهٔ سرنخ را بنویسید: leads 12 --stage contacted")

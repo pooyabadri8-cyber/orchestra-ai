@@ -953,10 +953,14 @@ class ControlService:
             runs = s.execute(select(Run).where(Run.org_id == self.org_id).order_by(Run.created_at.desc()).limit(6)).scalars().all()
             paused = (s.get(OrgControl, self.org_id) or OrgControl(paused=False)).paused
         lines = ["⏸ انتشار متوقف است (/resume)." if paused else "▶️ انتشار فعال است."]
+        last = self._state("backup:last")
+        if last:
+            when = datetime.fromisoformat(last).astimezone(TEHRAN)
+            lines.append(f"💾 آخرین پشتیبان: {mk.long_date(when.date())} ساعت {when.strftime('%H:%M').translate(mk.FA)}")
         for r in runs:
             what = (r.detail or {}).get("request") or r.template
             lines.append(f"• {STATUS_FA.get(r.status, r.status)} — {str(what)[:70]}")
-        return "\n".join(lines) if runs else lines[0] + "\nهنوز کاری انجام نشده است."
+        return "\n".join(lines) if runs else "\n".join(lines) + "\nهنوز کاری انجام نشده است."
 
     def jobs_text(self) -> str:
         with self.sessions() as s:
