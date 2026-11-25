@@ -14,6 +14,8 @@
     python -m orchestra.cli confirm-sent JOB_ID        an "unknown" post is on the channel
     python -m orchestra.cli retry JOB_ID               send an "unknown"/"dead"/"failed" job again
     python -m orchestra.cli pause / resume --org pouyan
+    python -m orchestra.cli plan [--start 2026-11-28]   the marketing agent proposes the content calendar
+    python -m orchestra.cli plan-approve PLAN_ID / plan-reject PLAN_ID   (items run while `serve` is on)
 """
 from __future__ import annotations
 
@@ -475,15 +477,20 @@ class DbosEngine:
     def __init__(self, cfg: Settings, rtm: Runtime, dbos, publisher: Publisher):
         self.cfg, self.rtm, self.dbos, self.publisher = cfg, rtm, dbos, publisher
 
-    def start_request(self, org_id: str, text: str, *, new: bool) -> str:
+    def start_request(self, org_id: str, text: str, *, new: bool, preset: dict | None = None,
+                      publish_at: datetime | None = None) -> str:
         from dbos import SetWorkflowID
 
         from .workflows import request as wf
         day = datetime.now(TEHRAN).date()
         run_id = wf.fresh_run_id(self.rtm.sessions, wf.run_id_for(org_id, text, day), new=new)
+        extra = {} if preset is None else {"preset": preset, "publish_at_iso": publish_at.isoformat() if publish_at else None}
         with SetWorkflowID(run_id):
-            self.dbos.start_workflow(wf.handle_request, org_id, text, day.isoformat(), _destinations(self.cfg, org_id))
+            self.dbos.start_workflow(wf.handle_request, org_id, text, day.isoformat(), _destinations(self.cfg, org_id), **extra)
         return run_id
+
+    def propose_plan(self, org_id: str, *, start, schedule: list, note: str, revise_of: int | None, actor: str) -> int:
+        return _propose_plan(self.cfg, self.rtm, org_id, start=start, schedule=schedule, note=note, revise_of=revise_of, actor=actor)
 
     def can_resume(self, run_id: str) -> bool:
         st = self.dbos.get_workflow_status(run_id)
@@ -568,12 +575,20 @@ def cmd_serve(cfg: Settings, a) -> None:
         hint = " تلگرام از ایران بدون VPN در دسترس نیست؛ یا VPN را روشن کنید یا ربات را در بله بسازید." if cfg.control_platform == "telegram" else ""
         print(f"⚠️ فعلاً به {cfg.control_platform} وصل نشدم ({e}).{hint} به تلاش ادامه می‌دهم…", flush=True)
     svc = ControlService(org_id=a.org, api=api, engine=DbosEngine(cfg, rtm, dbos, pub), sessions=rtm.sessions,
-                         assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds)
+                         assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds,
+                         orgs_root=cfg.orgs_dir)
     print(f"ربات کنترل روشن است ({cfg.control_platform}). برای خاموش کردن، همین پنجره را ببندید.", flush=True)
     if not owners:
         print("هنوز هیچ شناسه‌ای مجاز نیست: به ربات یک پیام بدهید تا شناسه‌تان را بگوید، بعد آن را در ORCHESTRA_CONTROL_CHAT_IDS بنویسید.", flush=True)
     for e in schedule:
         print(f"زمان‌بندی: {e.name} ساعت {e.at[0]:02d}:{e.at[1]:02d} — {e.request[:60]}", flush=True)
+    from .agents import marketing as mk
+    try:
+        policy = mk.load_policy(a.org, cfg.orgs_dir)
+    except mk.PlanError as e:
+        sys.exit(f"سیاست محتوا (marketing.yaml) خراب است: {e}")
+    if policy and policy.auto_propose:
+        print(f"برنامهٔ محتوا: پیشنهاد خودکار هر {policy.auto_propose.day} ساعت {policy.auto_propose.time}؛ یا /plan در ربات.", flush=True)
     try:
         if recovered and owners:
             svc._say(None, f"⚠️ این ارسال‌ها وسط کار قطع شده بودند و «نامعلوم» شدند: {recovered}\n/jobs را ببینید.")
@@ -581,6 +596,56 @@ def cmd_serve(cfg: Settings, a) -> None:
     except KeyboardInterrupt:
         pass
     leave_runs_waiting()
+
+
+def _propose_plan(cfg: Settings, rtm: Runtime, org_id: str, *, start, schedule: list, note: str, revise_of: int | None,
+                  actor: str) -> int:
+    from .agents.marketing import make_plan
+    from .db import utcnow
+    from .registry import DEFAULT_ROOT, Registry
+    platforms = tuple(sorted({p for _, p, _ in _destinations(cfg, org_id)}))
+    return asyncio.run(make_plan(rtm.sessions, rtm.gateway, Registry.load(DEFAULT_ROOT, check_entrypoints=False), org_id=org_id,
+                                 root=cfg.orgs_dir, start=start, schedule=schedule, platforms=platforms, now=utcnow(),
+                                 actor=actor, note=note, revise_of=revise_of))
+
+
+def cmd_plan(cfg: Settings, a, actor: str) -> None:
+    from .agents import marketing as mk
+    from .control.service import load_schedule
+    from .db import ContentPlanRow
+    from .registry import DEFAULT_ROOT, Registry
+    _ensure_ready(cfg, a.org)
+    rtm = _runtime(cfg)
+    schedule = load_schedule(cfg.orgs_dir / a.org / "schedule.yaml")
+    start = datetime.fromisoformat(a.start).date() if a.start else None
+    try:
+        plan_id = _propose_plan(cfg, rtm, a.org, start=start, schedule=schedule, note=a.note or "", revise_of=a.revise,
+                                actor=actor)
+    except mk.PlanError as e:
+        sys.exit(str(e))
+    with rtm.sessions() as s:
+        row = s.get(ContentPlanRow, plan_id)
+    plan = mk.load_plan(row)
+    policy, kb, _, _ = mk.load_context(a.org, cfg.orgs_dir, Registry.load(DEFAULT_ROOT, check_entrypoints=False))
+    print(mk.plan_text(plan, policy, kb, mk.fixed_items(schedule, plan.start, plan.days)))
+    print(f"\nبرنامهٔ شمارهٔ {plan_id}. تأیید: python -m orchestra.cli plan-approve {plan_id}   "
+          f"(یا از ربات کنترل؛ پست‌ها وقتی run_service.bat روشن است ساخته می‌شوند)")
+
+
+def cmd_plan_decide(cfg: Settings, a, decision: str, actor: str) -> None:
+    from .agents import marketing as mk
+    from .db import ContentPlanRow
+    sessions = _sessions(cfg)
+    with sessions() as s:
+        row = s.get(ContentPlanRow, a.plan_id)
+    if row is None:
+        sys.exit("این برنامه پیدا نشد.")
+    try:
+        with sessions.begin() as s:
+            mk.decide_plan(s, a.plan_id, row.plan_hash, decision, actor, datetime.now(TEHRAN).date())
+    except mk.PlanError as e:
+        sys.exit(str(e))
+    print("✅ برنامه تأیید شد." if decision == "approved" else "❌ برنامه رد شد.")
 
 
 def cmd_jobs(cfg: Settings, a) -> None:
@@ -612,6 +677,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("retry"); p.add_argument("job_id", type=int)
     p = sub.add_parser("pause"); p.add_argument("--org", default="pouyan")
     p = sub.add_parser("resume"); p.add_argument("--org", default="pouyan")
+    p = sub.add_parser("plan"); p.add_argument("--org", default="pouyan"); p.add_argument("--start")
+    p.add_argument("--note"); p.add_argument("--revise", type=int)
+    p = sub.add_parser("plan-approve"); p.add_argument("plan_id", type=int)
+    p = sub.add_parser("plan-reject"); p.add_argument("plan_id", type=int)
     a = ap.parse_args(argv)
     if a.cmd != "init":
         create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
@@ -645,6 +714,10 @@ def main(argv: list[str] | None = None) -> int:
         print("ثبت شد." if _publisher(cfg).confirm_sent(a.job_id, actor) else "این کار در وضعیت «نامعلوم» نیست.")
     elif a.cmd == "retry":
         print("دوباره در صف قرار گرفت." if _publisher(cfg).requeue(a.job_id, actor) else "این کار قابل ارسال دوباره نیست.")
+    elif a.cmd == "plan":
+        cmd_plan(cfg, a, actor)
+    elif a.cmd in ("plan-approve", "plan-reject"):
+        cmd_plan_decide(cfg, a, "approved" if a.cmd == "plan-approve" else "rejected", actor)
     elif a.cmd in ("pause", "resume"):
         _publisher(cfg).set_paused(a.org, a.cmd == "pause", actor)
         print("⏸ همهٔ انتشارها متوقف شد." if a.cmd == "pause" else "▶️ انتشار ادامه پیدا کرد.")

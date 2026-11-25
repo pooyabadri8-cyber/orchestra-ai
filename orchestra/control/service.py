@@ -6,7 +6,9 @@ In the control chat (Telegram or Bale) the owner can
   - approve or reject with one button (or by typing «تأیید ۱۲» / «رد ۱۲ دلیل»), or send it back with a note
     («اصلاح ۱۲ تیتر کوتاه‌تر شود»): the team makes a new version from the same data;
   - be told what happened to every publish job, and act on the unclear ones (/sent, /retry);
-  - stop everything (/pause) and continue (/resume).
+  - stop everything (/pause) and continue (/resume);
+  - ask the marketing agent for the channel's content calendar (/plan), approve it, send it back with a note, or reject
+    it. Each item of an approved plan starts by itself before its time and still comes back for its own approval.
 A daily schedule (orgs/<org>/schedule.yaml) can start requests by itself; they still wait for approval.
 
 Safety rules kept here:
@@ -27,7 +29,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Protocol
 from zoneinfo import ZoneInfo
@@ -37,9 +39,12 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..assets import AssetStore
+from ..agents import marketing as mk
 from ..db import (
-    ControlJobReport, ControlPrompt, ControlRequest, ControlState, OrgControl, PackageRow, PublishJob, Run, utcnow,
+    ContentPlanRow, ControlJobReport, ControlPrompt, ControlRequest, ControlState, OrgControl, PackageRow, PublishJob, Run,
+    utcnow,
 )
+from ..registry import DEFAULT_ROOT, Registry
 from .botapi import BotApi, BotApiError, split_text
 
 log = logging.getLogger("orchestra.control")
@@ -49,6 +54,7 @@ JOB_FINAL = ("confirmed", "failed", "unknown", "dead", "blocked", "expired", "ca
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")  # date.weekday() order
 FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 SCHEDULE_WINDOW = timedelta(hours=4)
+PLAN_LATE = timedelta(hours=2)  # a plan item whose time passed this long ago (the bot was off) is not started any more
 
 HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 
@@ -64,11 +70,16 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /resume — ادامهٔ انتشار
 /sent شماره — «این پست روی کانال هست» (برای ارسال نامعلوم)
 /retry شماره — دوباره بفرست
+/plan — برنامهٔ محتوای هفتهٔ بعد (/plan فردا: از فردا)
+/plans — برنامهٔ تأییدشده و پست‌های پیش رو
 /cancel — انصراف از نوشتن توضیح اصلاح"""
 
 
 class Engine(Protocol):
-    def start_request(self, org_id: str, text: str, *, new: bool) -> str: ...
+    def start_request(self, org_id: str, text: str, *, new: bool, preset: dict | None = None,
+                      publish_at: datetime | None = None) -> str: ...
+    def propose_plan(self, org_id: str, *, start: date | None, schedule: list, note: str, revise_of: int | None,
+                     actor: str) -> int: ...
     def can_resume(self, run_id: str) -> bool: ...
     def is_alive(self, run_id: str) -> bool: ...
     def decide(self, run_id: str, package_hash: str, decision: str, actor: str, reason: str | None) -> dict: ...
@@ -168,6 +179,8 @@ class ControlService:
     schedule: list[ScheduleEntry] = field(default_factory=list)
     poll_seconds: int = 5
     clock: Callable[[], datetime] = utcnow
+    orgs_root: Path = Path("orgs")
+    registry_root: Path = DEFAULT_ROOT
     _failures: dict[str, tuple[int, float]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ loop
@@ -200,6 +213,13 @@ class ControlService:
     def tick(self) -> None:
         self.read_updates()
         self.run_schedule()
+        for step in (self.auto_propose_plan, self.run_plans):  # a broken plan file must not stop approvals or publishing
+            try:
+                step()
+            except BotApiError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("content plan step failed")
         self.ask_for_approvals()
         self.close_stale_prompts()
         self.report_requests()
@@ -255,6 +275,12 @@ class ControlService:
             elif action == "ed" and pid.isdigit():
                 self.api.answer_button(str(cq.get("id")))
                 self.ask_note(int(pid), chat)
+            elif action in ("pok", "pno") and pid.isdigit():
+                self.api.answer_button(str(cq.get("id")), "در حال ثبت…")
+                self.decide_plan(int(pid), "approved" if action == "pok" else "rejected", user, chat)
+            elif action == "ped" and pid.isdigit():
+                self.api.answer_button(str(cq.get("id")))
+                self.ask_plan_note(int(pid), chat)
             return
         msg = u.get("message") or {}
         text = (msg.get("text") or "").strip()
@@ -277,7 +303,10 @@ class ControlService:
         pending_note = self._state(f"note:{chat}")
         if pending_note and not word.startswith("/"):  # the owner pressed «اصلاح»: this message is the note
             self._set_state(f"note:{chat}", "")
-            self.decide(int(pending_note), "revise", user, chat, text)
+            if pending_note.startswith("plan:"):
+                self.make_plan(chat, None, note=text, revise_of=int(pending_note[5:]), actor=actor)
+            else:
+                self.decide(int(pending_note), "revise", user, chat, text)
         elif word == "/cancel":
             self._set_state(f"note:{chat}", "")
             self._say(chat, "انصراف ثبت شد." if pending_note else "چیزی برای انصراف نیست.")
@@ -287,6 +316,12 @@ class ControlService:
             self._say(chat, self.status_text())
         elif word == "/jobs":
             self._say(chat, self.jobs_text())
+        elif word == "/plan":
+            today = self.clock().astimezone(TEHRAN).date()
+            self.make_plan(chat, today + timedelta(days=1) if rest in ("فردا", "tomorrow") else None, note="", revise_of=None,
+                           actor=actor)
+        elif word == "/plans":
+            self._say(chat, self.plans_text())
         elif word in ("/pause", "/resume"):
             self.engine.set_paused(self.org_id, word == "/pause", actor)
             self._say(chat, "⏸ همهٔ انتشارها متوقف شد." if word == "/pause" else "▶️ انتشار ادامه پیدا کرد.")
@@ -315,17 +350,21 @@ class ControlService:
 
     # ------------------------------------------------------------------ requests
 
-    def start_request(self, text: str, chat: str | None, origin: str, *, new: bool) -> None:
+    def start_request(self, text: str, chat: str | None, origin: str, *, new: bool, preset: dict | None = None,
+                      publish_at: datetime | None = None, ack: str | None = None) -> None:
         with self.sessions() as s:
             if s.execute(select(ControlRequest.id).where(ControlRequest.origin == origin)).first():
                 return  # this message was already taken (a replay after a restart)
-        run_id = self.engine.start_request(self.org_id, text, new=new)
+        if preset is None:
+            run_id = self.engine.start_request(self.org_id, text, new=new)
+        else:
+            run_id = self.engine.start_request(self.org_id, text, new=new, preset=preset, publish_at=publish_at)
         try:
             with self.sessions.begin() as s:
                 s.add(ControlRequest(org_id=self.org_id, origin=origin, chat_id=chat, run_id=run_id, text=text))
         except IntegrityError:
             return
-        self._say(chat, "دریافت شد ✅ تیم مشغول آماده‌سازی است؛ نتیجه را همین‌جا می‌فرستم.")
+        self._say(chat, ack or "دریافت شد ✅ تیم مشغول آماده‌سازی است؛ نتیجه را همین‌جا می‌فرستم.")
 
     def run_schedule(self) -> None:
         now = self.clock().astimezone(TEHRAN)
@@ -510,6 +549,174 @@ class ControlService:
                     if mid:
                         self.api.replace_text(chat, mid, text)
                 self._say(None, text)
+
+    # ------------------------------------------------------------------ content plans (marketing agent)
+
+    def _registry(self) -> Registry:
+        return Registry.load(self.registry_root, check_entrypoints=False)
+
+    def _context(self):
+        return mk.load_context(self.org_id, self.orgs_root, self._registry())
+
+    def make_plan(self, chat: str | None, start: date | None, *, note: str, revise_of: int | None, actor: str) -> None:
+        """Ask the marketing agent for a plan (or a new version of one) and show it for approval."""
+        if revise_of is None and start is None:
+            with self.sessions() as s:
+                waiting = s.execute(select(ContentPlanRow.id).where(ContentPlanRow.org_id == self.org_id,
+                                                                    ContentPlanRow.status == "proposed")).scalars().first()
+            if waiting is not None:
+                self._say(chat, f"برنامهٔ {waiting} هنوز منتظر تصمیم شماست؛ تأیید، اصلاح یا ردش کنید.")
+                return
+        self._say(chat, "🗓 کارمند بازاریابی در حال چیدن برنامه است…" if revise_of is None else
+                  f"✏️ برنامهٔ {revise_of}: اصلاح ثبت شد؛ نسخهٔ جدید را می‌فرستم.\nتوضیح شما: {note}")
+        try:
+            plan_id = self.engine.propose_plan(self.org_id, start=start, schedule=self.schedule, note=note,
+                                               revise_of=revise_of, actor=actor)
+        except BotApiError:
+            raise
+        except Exception as e:  # noqa: BLE001  a model or rule failure: say why; a revised plan's old version still waits
+            log.warning("plan failed: %s", e)
+            msg = f"⚠️ برنامه ساخته نشد: {str(e)[:500]}"
+            if revise_of is not None:
+                msg += f"\nبرنامهٔ {revise_of} همچنان منتظر تصمیم شماست."
+            self._say(chat, msg)
+            return
+        if revise_of is not None:
+            self._close_plan_question(revise_of, f"⌛️ برنامهٔ {revise_of} با نسخهٔ جدید (شمارهٔ {plan_id}) جایگزین شد.", tell=False)
+        self.show_plan(plan_id)
+
+    def show_plan(self, plan_id: int) -> None:
+        with self.sessions() as s:
+            row = s.get(ContentPlanRow, plan_id)
+        plan = mk.load_plan(row)
+        policy, kb, _, _ = self._context()
+        fixed = mk.fixed_items(self.schedule, plan.start, plan.days)
+        can_revise = row.version <= mk.MAX_REVISIONS
+        messages = []
+        for chat in self.owners:
+            for part in split_text(mk.plan_text(plan, policy, kb, fixed)):
+                self.api.send_text(chat, part)
+            question = (f"درخواست تأیید برنامهٔ شمارهٔ {plan_id}\nشناسهٔ برنامه: {row.plan_hash[:12]}\n\n"
+                        "این برنامه اجرا شود؟ (هر پست جدا هم از شما تأیید می‌گیرد)")
+            buttons = [("✅ تأیید برنامه", f"pok:{plan_id}"), *([("✏️ اصلاح", f"ped:{plan_id}")] if can_revise else []),
+                       ("❌ رد", f"pno:{plan_id}")]
+            messages.append([chat, self.api.send_text(chat, question, buttons=[buttons])])
+        with self.sessions.begin() as s:
+            s.execute(update(ContentPlanRow).where(ContentPlanRow.id == plan_id).values(messages=messages))
+
+    def ask_plan_note(self, plan_id: int, chat: str) -> None:
+        with self.sessions() as s:
+            row = s.get(ContentPlanRow, plan_id)
+        if row is None or row.org_id != self.org_id or row.status != "proposed":
+            self._say(chat, f"برنامهٔ {plan_id} منتظر تصمیم نیست.")
+        elif row.version > mk.MAX_REVISIONS:
+            self._say(chat, "برای این برنامه دیگر اصلاح ممکن نیست؛ تأیید یا رد کنید.")
+        else:
+            self._set_state(f"note:{chat}", f"plan:{plan_id}")
+            self._say(chat, f"بنویسید در برنامهٔ {plan_id} چه چیزی عوض شود (مثلاً «پست فراخوان عصر سه‌شنبه باشد»). (انصراف: /cancel)")
+
+    def decide_plan(self, plan_id: int, decision: str, user: str, chat: str) -> None:
+        actor = f"{self.api.platform}:{user}"
+        today = self.clock().astimezone(TEHRAN).date()
+        with self.sessions() as s:
+            row = s.get(ContentPlanRow, plan_id)
+        if row is None or row.org_id != self.org_id:
+            self._say(chat, f"برنامهٔ {plan_id} پیدا نشد.")
+            return
+        try:
+            with self.sessions.begin() as s:
+                mk.decide_plan(s, plan_id, row.plan_hash, decision, actor, today)
+        except mk.PlanError as e:
+            self._say(chat, f"برنامهٔ {plan_id}: {e}")
+            return
+        if decision == "approved":
+            plan = mk.load_plan(row)
+            text = (f"✅ برنامهٔ {plan_id} تأیید شد: {len(plan.items)} پست تا {mk.long_date(plan.end)}. "
+                    "هر پست پیش از ساعتش آماده می‌شود و برای تأیید می‌آید. (/plans)")
+        else:
+            text = f"❌ برنامهٔ {plan_id} رد شد. برای برنامهٔ تازه /plan را بزنید."
+        self._close_plan_question(plan_id, text)
+
+    def _close_plan_question(self, plan_id: int, text: str, tell: bool = True) -> None:
+        with self.sessions() as s:
+            row = s.get(ContentPlanRow, plan_id)
+        for chat, mid in (row.messages or []) if row else []:
+            if mid:
+                self.api.replace_text(chat, mid, text)
+        if tell:
+            self._say(None, text)
+
+    def run_plans(self) -> None:
+        """Start every item of an approved plan whose preparation time has come (once: the origin is unique)."""
+        now = self.clock()
+        today = now.astimezone(TEHRAN).date()
+        with self.sessions() as s:
+            rows = s.execute(select(ContentPlanRow).where(ContentPlanRow.org_id == self.org_id,
+                                                          ContentPlanRow.status == "approved")).scalars().all()
+        due = []
+        for row in rows:
+            plan = mk.load_plan(row)
+            if plan.end < today:
+                continue
+            for n, it in enumerate(plan.items, 1):
+                at = mk.publish_at(it)
+                due.append((row.id, n, it, at))
+        if not due:
+            return
+        policy, kb, _, _ = self._context()
+        for plan_id, n, it, at in due:
+            if at - timedelta(minutes=policy.prepare_minutes) <= now < at + PLAN_LATE:
+                preset = mk.preset_for(it, policy, kb)
+                self.start_request(mk.request_text(it, policy, kb), None, f"plan:{plan_id}:{n}", new=False, preset=preset,
+                                   publish_at=at, ack=f"🗓 طبق برنامهٔ {plan_id}: آماده‌سازی «{preset['summary_fa']}» برای ساعت "
+                                                     f"{it.time.translate(mk.FA)} شروع شد.")
+
+    def auto_propose_plan(self) -> None:
+        """Once a week (marketing.yaml auto_propose), propose next period's plan by itself. Tried once per period."""
+        if not self.owners:
+            return
+        now = self.clock().astimezone(TEHRAN)
+        try:
+            policy = mk.load_policy(self.org_id, self.orgs_root)
+        except mk.PlanError:
+            return  # reported when someone asks for a plan
+        auto = policy.auto_propose if policy else None
+        if auto is None or DAYS[now.weekday()] != auto.day:
+            return
+        h, m = map(int, auto.time.split(":"))
+        begin = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if not begin <= now < begin + SCHEDULE_WINDOW:
+            return
+        start = mk.next_start(now.date(), policy.week_start)
+        key = f"autoplan:{start.isoformat()}"
+        with self.sessions() as s:
+            exists = s.execute(select(ContentPlanRow.id).where(ContentPlanRow.org_id == self.org_id,
+                                                               ContentPlanRow.start == start.isoformat())).first()
+        if exists or self._state(key):
+            return
+        self._set_state(key, "tried")
+        self.make_plan(None, start, note="", revise_of=None, actor="system:schedule")
+
+    def plans_text(self) -> str:
+        now = self.clock()
+        today = now.astimezone(TEHRAN).date()
+        with self.sessions() as s:
+            rows = s.execute(select(ContentPlanRow).where(ContentPlanRow.org_id == self.org_id,
+                                                          ContentPlanRow.status.in_(("approved", "proposed")))
+                             .order_by(ContentPlanRow.id)).scalars().all()
+            started = {r.origin for r in s.execute(select(ControlRequest).where(ControlRequest.origin.like("plan:%"))).scalars()}
+        lines = []
+        for row in rows:
+            plan = mk.load_plan(row)
+            if plan.end < today:
+                continue
+            state = "تأییدشده" if row.status == "approved" else "منتظر تصمیم شما"
+            lines.append(f"🗓 برنامهٔ {row.id} ({state}): {mk.long_date(plan.start)} تا {mk.long_date(plan.end)}")
+            for n, it in enumerate(plan.items, 1):
+                at = mk.publish_at(it)
+                mark = "▶️ شروع شده" if f"plan:{row.id}:{n}" in started else ("⏭ گذشت" if at + PLAN_LATE <= now else "⏳")
+                lines.append(f"  {mark} {mk.long_date(it.day)} {it.time.translate(mk.FA)} — {it.pillar}/{it.topic}")
+        return "\n".join(lines) or "برنامهٔ فعالی نیست. /plan را بزنید."
 
     # ------------------------------------------------------------------ publish reports
 

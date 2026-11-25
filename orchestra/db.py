@@ -282,6 +282,28 @@ class ControlJobReport(Base):
     status: Mapped[str] = mapped_column(String(16))
 
 
+class ContentPlanRow(Base):
+    """A content calendar proposed by the marketing agent. Approval is bound to `plan_hash`; a revision is a new row
+    (the old one becomes superseded), so a button on an older version can never approve the newer one.
+    proposed -> approved | rejected | superseded (a newer version, or a newer approved plan for the same days)."""
+
+    __tablename__ = "content_plans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    start: Mapped[str] = mapped_column(String(10))  # ISO day
+    days: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    supersedes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_json: Mapped[str] = mapped_column(Text)  # canonical JSON, exactly what was hashed
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="proposed")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)  # the owner's note that asked for this version
+    messages: Mapped[list] = mapped_column(JSON, default=list)  # [[chat_id, message_id], ...] of the question
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 def make_engine(url: str) -> Engine:
     engine = create_engine(url, future=True, pool_pre_ping=True)
     if engine.dialect.name == "sqlite":

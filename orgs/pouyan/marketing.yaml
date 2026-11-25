@@ -1,0 +1,55 @@
+# سیاست تقویم محتوای کانال: کارمند بازاریابی (Marketing Agent) هر دوره برنامهٔ انتشار را با همین قواعد می‌چیند.
+# کد برنامه را با این قواعد می‌سنجد؛ برنامه‌ای که با آن‌ها نخواند، به شما نشان داده نمی‌شود.
+# پست‌های ثابت روزانه (مثل گزارش پایان بازار) در schedule.yaml هستند و اینجا در سقف روزانه و فاصله‌ها حساب می‌شوند.
+# بعد از تغییر این فایل، ربات کنترل را دوباره اجرا کنید.
+org_id: pouyan
+
+plan_days: 7              # طول هر برنامه (روز)
+week_start: sat           # برنامهٔ «هفتهٔ بعد» از این روز شروع می‌شود
+prepare_minutes: 90       # هر پست این‌قدر پیش از ساعتش ساخته و برای تأیید فرستاده می‌شود؛ پس از تأیید سر ساعتش منتشر می‌شود
+
+posting:
+  days: [sat, sun, mon, tue, wed, thu]
+  earliest: "09:00"       # به وقت تهران
+  latest: "21:00"
+  max_per_day: 3          # همهٔ پست‌های یک روز، با احتساب پست‌های ثابت
+  min_gap_minutes: 120    # فاصلهٔ هر دو پست یک روز
+
+# پیشنهاد خودکار برنامهٔ هفتهٔ بعد (فقط پیشنهاد؛ تا تأیید نکنید اجرا نمی‌شود). برای خاموش کردن، این بخش را حذف کنید.
+auto_propose:
+  day: thu
+  time: "10:00"
+
+# محورهای محتوا (از config.yaml نسخهٔ قبلی). per_period = چند پست از این محور در هر برنامه.
+# template: نوع کار (registry/templates)؛ topics: موضوع‌های مجاز از knowledge.yaml.
+pillars:
+  - id: proof
+    name_fa: اثبات و کارنامه
+    brief: آمار طرح‌های عرضه‌شده و نرخ تکمیل تامین مالی؛ فقط اعداد پایگاه دانش.
+    template: topic_post
+    topics: [crowd_track_record, crowd_projects]
+    per_period: 1
+  - id: concerns
+    name_fa: رفع ابهام
+    brief: پاسخ به نگرانی‌های متقاضی دربارهٔ وثیقه، زمان و از دست دادن سهام.
+    template: topic_post
+    topics: [crowd_concerns]
+    per_period: 1
+  - id: path
+    name_fa: مسیر تامین مالی
+    brief: مسیر تامین مالی در سه فاز و نقطهٔ کنترلی ثبت در فرابورس.
+    template: topic_post
+    topics: [crowd_path]
+    per_period: 1
+  - id: identity
+    name_fa: تمایز پویان کراد
+    brief: سکو و نهاد مالی زیر یک سقف؛ سهامداری دست‌نخورده.
+    template: topic_post
+    topics: [crowd_intro]
+    per_period: 1
+  - id: call
+    name_fa: فراخوان
+    brief: دعوت مدیران شرکت‌ها به ثبت درخواست تامین مالی؛ رایگان و بدون تعهد.
+    template: topic_post
+    topics: [crowd_cta]
+    per_period: 1

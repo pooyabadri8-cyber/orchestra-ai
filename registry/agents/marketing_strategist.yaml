@@ -1,0 +1,9 @@
+id: marketing_strategist
+version: 1.0.0
+name_fa: کارمند بازاریابی (تقویم محتوا)
+role: برنامهٔ انتشار کانال را برای یک دوره می‌چیند (کدام محور و موضوع، چه روز و ساعتی، از چه زاویه‌ای)؛ قواعد سیاست محتوا را کد بررسی می‌کند و برنامه پیش از اجرا تأیید صاحب کانال را لازم دارد. متن پست نمی‌نویسد و چیزی منتشر نمی‌کند.
+autonomy: L1
+entrypoint: orchestra.agents.marketing:propose_plan
+model_tier: manager
+inputs: [MarketingPolicy, KnowledgeBase, Schedule]
+outputs: [ContentPlan]
