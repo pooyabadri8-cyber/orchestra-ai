@@ -40,7 +40,7 @@ class Decision:
     message: str = ""  # the question or the decline reason, in Persian
 
 
-def system_prompt(registry: Registry, today: date, policy: OrgPolicy) -> str:
+def system_prompt(registry: Registry, today: date, policy: OrgPolicy, topics: list[tuple[str, str]] | None = None) -> str:
     stock = ("تحلیل یک سهم یا نماد مشخص مجاز است." if policy.single_stock_content else
              "این سازمان دربارهٔ یک سهم یا نماد مشخص محتوا منتشر نمی‌کند؛ چنین درخواستی را decline کن. تحلیل تکنیکال شاخص‌ها مجاز است.")
     return "\n".join([
@@ -53,6 +53,7 @@ def system_prompt(registry: Registry, today: date, policy: OrgPolicy) -> str:
         "",
         "کارهای تعریف‌شده:",
         registry.catalog_fa(),
+        *(["موضوع‌های پایگاه دانش این سازمان (برای پارامتر topic):", *(f"- {i}: {t}" for i, t in topics), ""] if topics else []),
         "قواعد:",
         "- اگر درخواست با یکی از کارها جور است: action=run. تاریخ‌ها را به شکل YYYY-MM-DD بنویس.",
         "- اگر چیز الزامی (مثلاً نام نماد) گفته نشده یا درخواست دو معنا دارد: action=clarify و یک سؤال کوتاه فارسی.",
@@ -77,13 +78,13 @@ def _parse(text: str) -> ManagerAnswer:
 
 
 async def plan_request(gateway: Gateway, registry: Registry, request: str, *, org_id: str, run_id: str, today: date,
-                       policy: OrgPolicy) -> Decision:
+                       policy: OrgPolicy, topics: list[tuple[str, str]] | None = None) -> Decision:
     request = request.strip()
     if not request:
         return Decision("clarify", message="چه کاری می‌خواهید انجام شود؟")
     if len(request) > MAX_REQUEST:
         return Decision("clarify", message="درخواست خیلی بلند است؛ لطفاً کوتاه‌تر بنویسید.")
-    system = system_prompt(registry, today, policy)
+    system = system_prompt(registry, today, policy, topics)
     user = f"درخواست کاربر:\n«{request}»"
     problem = ""
     for attempt in range(2):

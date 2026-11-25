@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 PLATFORMS = ("telegram", "bale", "instagram")
 SECTIONS = ("technical", "fundamental")
 MANDATORY_BEFORE_PUBLISH = ("fact_checker", "compliance_officer", "human_approval")
+CONTENT_SOURCES = ("market_analyst", "technical_analyst", "fundamental_analyst", "knowledge_curator")  # where facts come from
 _ID = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -268,7 +269,7 @@ class Registry:
         steps = [s for s in _toposort(t.steps, t.id) if _active(s, params)]
         active = {s.id for s in steps}
         planned = tuple(PlannedStep(id=s.id, agent=s.agent, depends_on=tuple(d for d in s.depends_on if d in active)) for s in steps)
-        if not any(s.agent in ("market_analyst", "technical_analyst", "fundamental_analyst") for s in planned):
+        if not any(s.agent in CONTENT_SOURCES for s in planned):
             raise RegistryError("این درخواست هیچ بخش تحلیلی ندارد")
         return ExecutionPlan(template_id=t.id, template_version=t.version, params=params, steps=planned, summary_fa=summary_fa)
 

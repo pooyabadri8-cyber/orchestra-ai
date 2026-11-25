@@ -1,0 +1,8 @@
+id: knowledge_curator
+version: 1.0.0
+name_fa: کارمند پایگاه دانش
+role: واقعیت‌ها و یادداشت‌های یک موضوع را از پایگاه دانش سازمان برمی‌دارد و هر عدد را با منبعش (همان فایل) ثبت می‌کند؛ چیزی را که در پایگاه دانش نیست نمی‌دهد.
+autonomy: L0
+entrypoint: orchestra.agents.knowledge:knowledge_part
+inputs: [KnowledgeBase]
+outputs: [AnalysisPart]

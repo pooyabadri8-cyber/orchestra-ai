@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,6 +22,7 @@ from dbos import DBOS
 from sqlalchemy import select
 
 from ..agents.analysis import AnalysisReport, InsufficientData
+from ..agents.knowledge import knowledge_part
 from ..agents.manager import PROMPT_VERSION as MANAGER_PROMPT
 from ..agents.manager import plan_request
 from ..agents.multichannel import PROMPT_VERSION as WRITER_PROMPT
@@ -47,9 +48,10 @@ from ..data.acquisition import AcquisitionError, acquire
 from ..data.imports import load_bars, record_import
 from ..data.sources import tse
 from ..db import DataPointRow, DataSnapshot, Run
+from ..knowledge import KnowledgeError, load_knowledge
 from ..llm import BudgetExceeded, LLMError
 from ..package import AssetRef, DataPointRef
-from ..registry import DEFAULT_ROOT, ExecutionPlan, OrgPolicy, Registry
+from ..registry import DEFAULT_ROOT, ExecutionPlan, OrgPolicy, Registry, RegistryError
 from ..runtime import rt
 from ..visual.charts import ChartSpec
 from ..visual.render import MIME, TEMPLATE_VERSION, RenderError, render_carousel
@@ -114,21 +116,38 @@ def s_open(run_id: str, org_id: str, request: str) -> None:
             s.add(Run(id=run_id, org_id=org_id, template="request", status="planning", detail={"request": request}))
 
 
+def _topics(org_id: str) -> list[tuple[str, str]]:
+    try:
+        got = load_knowledge(org_id, rt().brand_root)
+    except KnowledgeError:
+        return []
+    return [(t.id, t.title) for t in got[0].topics] if got else []
+
+
 @DBOS.step(retries_allowed=True, max_attempts=2, interval_seconds=30)
-async def s_plan(org_id: str, run_id: str, request: str, day_iso: str, platforms: list[str]) -> dict:
+async def s_plan(org_id: str, run_id: str, request: str, day_iso: str, platforms: list[str], preset: dict | None = None) -> dict:
+    """The Manager plans the request. A `preset` (an item of an approved content plan) is already a template and its
+    parameters: it is checked by the registry exactly like the Manager's answer, with no model call."""
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     policy = OrgPolicy.from_brand(brand, tuple(platforms))
-    try:
-        d = await plan_request(r.gateway, _registry(), request, org_id=org_id, run_id=run_id,
-                               today=date.fromisoformat(day_iso), policy=policy)
-    except LLMError as e:
-        if e.retryable and not isinstance(e, BudgetExceeded):
-            raise
-        return {"action": "failed", "message": f"مدیر نتوانست برنامه بریزد: {e}"}
-    if d.action != "run":
-        return {"action": d.action, "message": d.message}
-    plan = d.plan
+    if preset is not None:
+        try:
+            plan = _registry().instantiate(preset["template"], dict(preset.get("params") or {}), today=date.fromisoformat(day_iso),
+                                           policy=policy, summary_fa=str(preset.get("summary_fa") or ""))
+        except RegistryError as e:
+            return {"action": "decline", "message": f"این مورد برنامه قابل اجرا نیست: {e}"}
+    else:
+        try:
+            d = await plan_request(r.gateway, _registry(), request, org_id=org_id, run_id=run_id,
+                                   today=date.fromisoformat(day_iso), policy=policy, topics=_topics(org_id))
+        except LLMError as e:
+            if e.retryable and not isinstance(e, BudgetExceeded):
+                raise
+            return {"action": "failed", "message": f"مدیر نتوانست برنامه بریزد: {e}"}
+        if d.action != "run":
+            return {"action": d.action, "message": d.message}
+        plan = d.plan
     with r.sessions.begin() as s:
         run = s.get(Run, run_id)
         run.template = plan.template_id
@@ -251,6 +270,23 @@ def s_fx(snapshot_id: str) -> dict:
 
 
 @DBOS.step()
+def s_knowledge(org_id: str, topic: str) -> dict:
+    r = rt()
+    try:
+        got = load_knowledge(org_id, r.brand_root)
+        if got is None:
+            return {"missing": "این سازمان پایگاه دانش ندارد (orgs/<org>/knowledge.yaml)"}
+        kb, raw = got
+        t = kb.topic(topic)
+        with r.sessions.begin() as s:
+            part = knowledge_part(s, r.assets, kb, raw, topic_id=topic, now=r.clock())
+    except KnowledgeError as e:
+        return {"missing": str(e)}
+    task = f"یک پست دربارهٔ «{t.title}» بنویس: {t.brief} فقط از جدول داده و واقعیت‌ها استفاده کن."
+    return {"part": _part_json(part), "task": task}
+
+
+@DBOS.step()
 def s_indices(org_id: str, indices_snapshot_id: str | None, fara_snapshot_id: str | None, day_iso: str) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
@@ -294,13 +330,13 @@ def s_compose(snapshot_id: str, parts: list[dict], excluded: list[str], day_iso:
 
 @DBOS.step(retries_allowed=True, max_attempts=2, interval_seconds=60)
 async def q_write(org_id: str, run_id: str, report: dict, day_iso: str, platforms: list[str], focus: str,
-                  feedback: list[str] | None, attempt: int) -> dict:
+                  feedback: list[str] | None, attempt: int, task: str = "") -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     try:
         draft = await write_multichannel(r.gateway, brand, AnalysisReport.model_validate(report), org_id=org_id, run_id=run_id,
                                          date_text=long_date(date.fromisoformat(day_iso)), platforms=tuple(platforms),
-                                         focus=focus, feedback=feedback, step_key=f"write.{attempt}")
+                                         focus=focus, feedback=feedback, step_key=f"write.{attempt}", task=task)
     except BudgetExceeded as e:
         return {"error": f"budget: {e}"}
     except WriterError as e:
@@ -382,12 +418,16 @@ async def s_design(org_id: str, run_id: str, verified: dict) -> dict:
 
 @DBOS.step()
 def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], chart_points: list[str], destinations: list[list[str]],
-              window_minutes: int, risk: str, versions: dict, version: int = 1, supersedes: str | None = None) -> dict:
+              window_minutes: int, risk: str, versions: dict, version: int = 1, supersedes: str | None = None,
+              content_class: str = "market_report", not_before_iso: str | None = None) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     vc = _vc(verified)
     used = {c.point_id for c in vc.claims} | set(chart_points)
     now = r.clock()
+    not_before = datetime.fromisoformat(not_before_iso) if not_before_iso else None
+    if not_before is not None and not_before <= now:
+        not_before = None  # the planned time has passed: publish as soon as it is approved
     with r.sessions.begin() as s:
         rows = s.execute(select(DataPointRow, DataSnapshot.raw_sha256).outerjoin(DataSnapshot, DataSnapshot.id == DataPointRow.snapshot_id)
                          .where(DataPointRow.id.in_(used))).all()
@@ -399,9 +439,10 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
                                      unit=p.unit, as_of=p.as_of, source_id=p.source_id, raw_sha256=raw))
         caption = instagram_caption_text(brand, vc.caption) if vc.caption else None
         pkg = build_multichannel_package(
-            brand=brand, run_id=run_id, content_class="market_report", post=vc.post, instagram_caption=caption,
+            brand=brand, run_id=run_id, content_class=content_class, post=vc.post, instagram_caption=caption,
             slides=[AssetRef.model_validate(a) for a in assets], claims=vc.claims, data_points=refs,
-            destinations=[tuple(d) for d in destinations], versions=versions, expires_at=now + timedelta(minutes=window_minutes),
+            destinations=[tuple(d) for d in destinations], versions=versions, not_before=not_before,
+            expires_at=(not_before or now) + timedelta(minutes=window_minutes),
             risk_level=risk, extra_point_ids=frozenset(chart_points), version=version, supersedes=supersedes)
         store_package(s, pkg, actor=f"workflow:{run_id}")
         run = s.get(Run, run_id)
@@ -411,7 +452,7 @@ def q_package(org_id: str, run_id: str, verified: dict, assets: list[dict], char
 
 async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, day: str, platforms: list[str], focus: str,
                    dests: list[list[str]], window_minutes: int, owner_note: str | None, attempts_used: int, *,
-                   version: int, supersedes: str | None) -> dict:
+                   version: int, supersedes: str | None, task: str = "", publish_at_iso: str | None = None) -> dict:
     """One version of the content: write (with a retry on blocking findings), check, review, design, package.
     Returns {"pkg", "findings"} or, when no publishable version came out, {"status", "findings", "detail", "why"}."""
     note = [f"درخواست صاحب رسانه برای نسخهٔ جدید: {owner_note}"] if owner_note else []
@@ -421,7 +462,7 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
     good: tuple[dict, list[dict]] | None = None  # an acceptable draft kept while a polished one is tried
     for attempt in range(attempts_used + 1, attempts_used + ATTEMPTS_PER_VERSION + 1):
         try:
-            written = await q_write(org_id, run_id, report, day, platforms, focus, feedback, attempt)
+            written = await q_write(org_id, run_id, report, day, platforms, focus, feedback, attempt, task)
         except Exception as e:
             return {"status": "failed", "detail": {"error": f"write: {e}"}, "why": f"نویسنده: {e}"}
         if "error" in written:
@@ -473,7 +514,8 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
                 "writer_prompt": WRITER_PROMPT, "review_prompt": REVIEW_PROMPT, "carousel": TEMPLATE_VERSION,
                 "technical": TECH_V, "fundamental": FUND_V}
     try:
-        pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions, version, supersedes)
+        pkg = q_package(org_id, run_id, verified, assets, chart_points, dests, window_minutes, risk, versions, version, supersedes,
+                        plan.template_id, publish_at_iso)
     except Exception as e:  # noqa: BLE001  e.g. the earlier version is already on a channel
         if supersedes is None:
             raise
@@ -486,22 +528,27 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
 
 @DBOS.workflow()
 async def handle_request(org_id: str, request: str, day_iso: str, destinations: list[list[str]], source_id: str = "bourse_trader",
-                         approval_timeout_s: int = 3 * 3600, window_minutes: int = 240) -> dict[str, Any]:
-    """Any unexpected error ends the run as failed with its reason, so nothing waits on a run that stopped."""
+                         approval_timeout_s: int = 3 * 3600, window_minutes: int = 240, preset: dict | None = None,
+                         publish_at_iso: str | None = None) -> dict[str, Any]:
+    """Any unexpected error ends the run as failed with its reason, so nothing waits on a run that stopped.
+    `preset`: an approved content-plan item (template and params; no Manager call). `publish_at_iso`: the planned
+    publication time; the approved post waits for it."""
     try:
-        return await _handle_request(org_id, request, day_iso, destinations, source_id, approval_timeout_s, window_minutes)
+        return await _handle_request(org_id, request, day_iso, destinations, source_id, approval_timeout_s, window_minutes,
+                                     preset, publish_at_iso)
     except Exception as e:  # noqa: BLE001
         return s_finish(DBOS.workflow_id, "failed", detail={"error": f"{type(e).__name__}: {e}"[:600]})
 
 
 async def _handle_request(org_id: str, request: str, day_iso: str, destinations: list[list[str]], source_id: str = "bourse_trader",
-                         approval_timeout_s: int = 3 * 3600, window_minutes: int = 240) -> dict[str, Any]:
+                         approval_timeout_s: int = 3 * 3600, window_minutes: int = 240, preset: dict | None = None,
+                         publish_at_iso: str | None = None) -> dict[str, Any]:
     run_id = DBOS.workflow_id
     s_open(run_id, org_id, request)
     destinations = [[*d, "carousel" if d[1] == "instagram" else "post"][:3] if len(d) == 2 else list(d) for d in destinations]
     available = sorted({d[1] for d in destinations})
     try:
-        planned = await s_plan(org_id, run_id, request, day_iso, available)
+        planned = await s_plan(org_id, run_id, request, day_iso, available, preset)
     except Exception as e:
         return s_finish(run_id, "failed", detail={"error": f"manager: {e}"})
     if planned["action"] != "run":
@@ -584,6 +631,13 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
                 data_notes.append(_note("DATA-INDICES", f"بخشی از شاخص‌های TSE خوانده نشد: {'؛ '.join(errors)}"))
         else:
             data_notes.append(_note("DATA-INDICES", f"شاخص‌های فرعی و صنایع اضافه نشدند: {out['missing']}"))
+    task = ""
+    if plan.has("knowledge"):
+        out = s_knowledge(org_id, str(params.get("topic") or ""))
+        if "missing" in out:
+            return s_finish(run_id, "needs_input", detail={"message": out["missing"]})
+        parts.append(out["part"])
+        task = out["task"]
     if plan.has("fundamental"):
         out = s_fundamental(params.get("fundamental_subject") or params.get("subject"))
         if "missing" in out:
@@ -600,7 +654,7 @@ async def _handle_request(org_id: str, request: str, day_iso: str, destinations:
     for round_no in range(1, MAX_REVISIONS + 2):
         made = await _produce(org_id, run_id, plan, report, day, platforms, str(params.get("focus") or ""), dests,
                               window_minutes, owner_note, attempts_used, version=round_no if current is None else current["version"] + 1,
-                              supersedes=None if current is None else current["package_id"])
+                              supersedes=None if current is None else current["package_id"], task=task, publish_at_iso=publish_at_iso)
         if "findings" in made:
             made["findings"] = [*data_notes, *(made["findings"] or [])]
         attempts_used += ATTEMPTS_PER_VERSION

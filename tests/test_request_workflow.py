@@ -380,3 +380,51 @@ def test_without_tgju_the_report_still_comes_with_a_note(engine):
     with rtm.sessions() as s:
         notes = [f["message"] for f in s.get(Run, rid).findings if f["rule_id"] == "DATA-FX"]
     assert len(notes) == 1 and "بخش ارز و طلا اضافه نشد" in notes[0] and "بازار ارز و طلا" not in prov.calls[1]
+
+
+TOPIC_DRAFT = {
+    "post": {"hashtag": "#تامین_مالی_جمعی", "headline": "کارنامهٔ پویان کراد",
+             "paragraphs": ["تاکنون {{P1|money}} برای {{P2|int}} طرح در پویان کراد تامین شده است.",
+                            "نرخ تکمیل تامین مالی طرح‌ها {{P3|pct}} بوده است."],
+             "cta": "برای ثبت درخواست تامین مالی با کارشناس پذیرش گفت‌وگو کنید."},
+    "instagram": {"paragraphs": ["هر طرحی که روی پویان کراد عرضه شد، کامل تامین شد."], "hashtags": ["#تامین_مالی_جمعی"]},
+    "slides": [{"title": "کارنامهٔ پویان کراد", "bullets": ["هر طرح عرضه‌شده کامل تامین شد."],
+                "stats": [{"label": "مبلغ تامین‌شده", "value": "{{P1|money}}"}, {"label": "نرخ تکمیل", "value": "{{P3|pct}}"}]},
+               {"title": "طرح‌ها", "bullets": ["طرح {{P6|name}} با مبلغ {{P6|money}} عرضه شد."]}],
+}
+
+
+def test_a_content_plan_item_runs_without_the_manager_and_waits_for_its_time(engine):
+    rtm, prov, _ = runtime(engine, [TOPIC_DRAFT, CLEAN, CLEAN])
+    preset = {"template": "topic_post", "params": {"topic": "crowd_track_record"}, "summary_fa": "کارنامهٔ پویان کراد"}
+    at = "2026-11-11T15:00:00+00:00"
+    request = "برنامهٔ محتوا: کارنامهٔ پویان کراد"
+    rid = wf.run_id_for("pouyan", request, date(2026, 11, 11))
+    with SetWorkflowID(rid):
+        handle = DBOS.start_workflow(wf.handle_request, "pouyan", request, DAY, DEST, preset=preset, publish_at_iso=at)
+    assert wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "needs_input"}, timeout=90) == "awaiting_approval"
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        pkg = s.get(PackageRow, run.package_id)
+        steps = [c.step_key for c in s.execute(select(LLMCall).order_by(LLMCall.id)).scalars()]
+    assert steps == ["write.1", "review.editor.1", "review.compliance.1"] and run.template == "topic_post"
+    content = json.loads(pkg.content_json)
+    assert pkg.content_class == "topic_post"
+    assert {d["not_before"] for d in content["destinations"]} == {"2026-11-11T15:00:00Z"}
+    tg = next(d for d in content["destinations"] if d["platform"] == "telegram")["delivery_plan"][0]["body"]
+    assert "۵۵ میلیارد تومان" in tg and "۱۰۰٪" in tg
+    assert "knowledge.crowd_funded_total" in {p["metric"] for p in content["sources"]["data_points"]}
+    submit_decision(rid, pkg.package_hash, "approved", "user:1")
+    assert handle.get_result()["status"] == "approved"
+    with rtm.sessions() as s:
+        jobs = s.execute(select(PublishJob)).scalars().all()
+    assert jobs and all(j.next_attempt_at.isoformat().startswith("2026-11-11T15:00") for j in jobs)  # waits for its time
+
+
+def test_an_unknown_topic_asks_instead_of_writing(engine):
+    rtm, prov, _ = runtime(engine, [])
+    rid = wf.run_id_for("pouyan", "x", date(2026, 11, 11))
+    with SetWorkflowID(rid):
+        DBOS.start_workflow(wf.handle_request, "pouyan", "x", DAY, DEST, preset={"template": "topic_post", "params": {"topic": "nope"}})
+    assert wait_for_status(rtm.sessions, rid, {"needs_input", "failed"}, timeout=60) == "needs_input"
+    assert prov.calls == []

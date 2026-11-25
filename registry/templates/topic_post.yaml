@@ -1,0 +1,22 @@
+id: topic_post
+version: 1.0.0
+name_fa: پست موضوعی از پایگاه دانش
+description: >-
+  پست دربارهٔ یکی از موضوع‌های پایگاه دانش سازمان (مثلاً معرفی پویان کراد، کارنامه، رفع ابهام، مسیر تامین مالی،
+  معرفی طرح‌ها، دعوت به ثبت درخواست)؛ فقط از واقعیت‌های ثبت‌شده در پایگاه دانش. خروجی برای تلگرام، بله و اینستاگرام.
+examples:
+  - یک پست دربارهٔ کارنامهٔ پویان کراد آماده کن
+  - پستی برای رفع ابهام دربارهٔ وثیقه در تامین مالی جمعی بنویس
+params:
+  - {name: topic, type: text, required: true, description: شناسهٔ موضوع از فهرست موضوع‌های پایگاه دانش (مثلاً crowd_intro)}
+  - {name: platforms, type: platforms, required: false, default: [telegram, bale, instagram], description: کانال‌های انتشار}
+  - {name: focus, type: text, required: false, description: نکته یا زاویهٔ خاصی که کاربر خواسته}
+steps:
+  - {id: knowledge, agent: knowledge_curator}
+  - {id: write, agent: writer, depends_on: [knowledge]}
+  - {id: verify, agent: fact_checker, depends_on: [write]}
+  - {id: edit, agent: editor, depends_on: [verify]}
+  - {id: comply, agent: compliance_officer, depends_on: [verify]}
+  - {id: design, agent: designer, depends_on: [verify], when: "platform:instagram"}
+  - {id: approve, agent: human_approval, depends_on: [edit, comply, design]}
+  - {id: publish, agent: publisher, depends_on: [approve]}
