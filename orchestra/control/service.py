@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from ..assets import AssetStore
 from ..agents import marketing as mk
 from ..agents import reporting as rp
+from ..crm import store as crm
 from ..db import (
     ContentPlanRow, ControlJobReport, ControlPrompt, ControlRequest, ControlState, OrgControl, PackageRow, PublishJob, Run,
     utcnow,
@@ -74,6 +75,9 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /plan — برنامهٔ محتوای هفتهٔ بعد (/plan فردا: از فردا)
 /plans — برنامهٔ تأییدشده و پست‌های پیش رو
 /report — گزارش عملکرد هفت روز گذشته (/report امروز، /report 30)
+/leads — سرنخ‌های باز تامین مالی
+/lead شماره — جزئیات و سابقهٔ یک سرنخ
+/note شماره متن — یادداشت روی سرنخ
 /cancel — انصراف از نوشتن توضیح اصلاح"""
 
 
@@ -183,6 +187,8 @@ class ControlService:
     clock: Callable[[], datetime] = utcnow
     orgs_root: Path = Path("orgs")
     registry_root: Path = DEFAULT_ROOT
+    crm_cfg: "crm.CrmConfig | None" = None
+    extra_ticks: list = field(default_factory=list)  # e.g. the public intake bot: its failures never stop this one
     _failures: dict[str, tuple[int, float]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ loop
@@ -215,7 +221,12 @@ class ControlService:
     def tick(self) -> None:
         self.read_updates()
         self.run_schedule()
-        for step in (self.auto_propose_plan, self.run_plans, self.auto_report):  # never stops approvals or publishing
+        for t in self.extra_ticks:
+            try:
+                t()
+            except Exception as e:  # noqa: BLE001  the intake bot being unreachable must not stop the control bot
+                log.warning("intake bot: %s", e)
+        for step in (self.auto_propose_plan, self.run_plans, self.auto_report, self.remind_leads):  # never stops approvals or publishing
             try:
                 step()
             except BotApiError:
@@ -283,6 +294,11 @@ class ControlService:
             elif action == "ped" and pid.isdigit():
                 self.api.answer_button(str(cq.get("id")))
                 self.ask_plan_note(int(pid), chat)
+            elif action == "ld" and self.crm_cfg is not None:
+                lead_id, _, stage = pid.partition(":")
+                if lead_id.isdigit():
+                    self.api.answer_button(str(cq.get("id")), "ثبت شد")
+                    self.move_lead(int(lead_id), stage, f"{self.api.platform}:{user}", chat)
             return
         msg = u.get("message") or {}
         text = (msg.get("text") or "").strip()
@@ -324,6 +340,25 @@ class ControlService:
                            actor=actor)
         elif word == "/plans":
             self._say(chat, self.plans_text())
+        elif word in ("/leads", "/lead", "/note"):
+            if self.crm_cfg is None:
+                self._say(chat, "CRM تنظیم نشده است (orgs/<org>/crm.yaml).")
+            elif word == "/leads":
+                self._say(chat, self.leads_text())
+            else:
+                n = _num(rest)
+                if n is None:
+                    self._say(chat, f"شمارهٔ سرنخ را بنویسید، مثل: {word} 12" + (" متن یادداشت" if word == "/note" else ""))
+                elif word == "/lead":
+                    self.show_lead(n, chat)
+                else:
+                    note = re.sub(r"^\s*[\d۰-۹٠-٩]+\s*", "", rest)
+                    try:
+                        with self.sessions.begin() as s:
+                            crm.add_note(s, self.crm_cfg, n, note, actor, self.clock())
+                        self._say(chat, f"یادداشت روی سرنخ {n} ثبت شد.")
+                    except crm.CrmError as e:
+                        self._say(chat, str(e))
         elif word == "/report":
             days = 1 if rest in ("امروز", "today") else (_num(rest) or 7)
             self._say(chat, self.report_text(min(days, rp.MAX_DAYS)))
@@ -745,6 +780,89 @@ class ControlService:
             return
         self._set_state(key, "sent")
         self._say(None, self.report_text(weekly.days))
+
+    # ------------------------------------------------------------------ CRM (leads from the public intake bot)
+
+    def lead_card(self, lead, head: str) -> str:
+        cfg = self.crm_cfg
+        lines = [head]
+        lines += [f"{q.label}: {lead.fields.get(q.id, '—')}" for q in cfg.intake.questions]
+        who = f"@{lead.username}" if lead.username else (f"شناسهٔ {lead.user_id}" if lead.user_id else "")
+        lines.append(f"مرحله: {cfg.stage_fa(lead.stage)}" + (f" | از: {lead.ref}" if lead.ref else "") + (f" | {lead.channel} {who}" if who else ""))
+        return "\n".join(lines)
+
+    def _lead_buttons(self, lead) -> list:
+        moves = [(s.name_fa, f"ld:{lead.id}:{s.id}") for s in self.crm_cfg.stages if s.id != lead.stage]
+        return [moves[i:i + 3] for i in range(0, len(moves), 3)]
+
+    def notify_lead(self, lead_id: int, created: bool) -> None:
+        """Called by the intake bot when someone submits the form."""
+        from ..db import Lead
+        with self.sessions() as s:
+            lead = s.get(Lead, lead_id)
+        head = f"🆕 سرنخ تازهٔ تامین مالی — شمارهٔ {lead.id}" if created else f"✏️ سرنخ {lead.id} پاسخ‌هایش را به‌روز کرد"
+        for chat in self.owners:
+            self.api.send_text(chat, self.lead_card(lead, head), buttons=self._lead_buttons(lead))
+
+    def move_lead(self, lead_id: int, stage: str, actor: str, chat: str) -> None:
+        try:
+            with self.sessions.begin() as s:
+                lead = crm.set_stage(s, self.crm_cfg, lead_id, stage, actor, self.clock())
+        except crm.CrmError as e:
+            self._say(chat, str(e))
+            return
+        self.api.send_text(chat, self.lead_card(lead, f"سرنخ {lead.id} → {self.crm_cfg.stage_fa(stage)}"),
+                           buttons=None if self.crm_cfg.stage(stage).final else self._lead_buttons(lead))
+
+    def show_lead(self, lead_id: int, chat: str) -> None:
+        from ..db import Lead
+        with self.sessions() as s:
+            lead = s.get(Lead, lead_id)
+            history = crm.events(s, lead_id) if lead is not None and lead.org_id == self.org_id else []
+        if not history:
+            self._say(chat, f"سرنخ {lead_id} پیدا نشد.")
+            return
+        lines = []
+        for e in history:
+            when = e.ts.astimezone(TEHRAN).strftime("%m/%d %H:%M")
+            what = {"created": "ثبت شد", "updated": "پاسخ‌ها به‌روز شد", "reminded": "یادآوری پیگیری",
+                    "stage": f"{self.crm_cfg.stage_fa(e.data.get('from', ''))} ← {self.crm_cfg.stage_fa(e.data.get('to', ''))}",
+                    "note": f"یادداشت: {e.data.get('text', '')}"}.get(e.kind, e.kind)
+            lines.append(f"• {when} — {what}")
+        self.api.send_text(chat, self.lead_card(lead, f"📇 سرنخ {lead.id}") + "\n\nسابقه:\n" + "\n".join(lines[-15:]),
+                           buttons=self._lead_buttons(lead))
+
+    def leads_text(self) -> str:
+        with self.sessions() as s:
+            leads = crm.open_leads(s, self.crm_cfg)
+        if not leads:
+            return "سرنخ بازی نیست."
+        now = self.clock()
+        first = self.crm_cfg.intake.questions[0].id
+        lines = [f"📇 {len(leads)} سرنخ باز:"]
+        for st in self.crm_cfg.stages:
+            group = [x for x in leads if x.stage == st.id]
+            if group:
+                lines.append(f"\n{st.name_fa}:")
+                lines += [f"  {x.id} — {x.fields.get(first, '—')} ({int((now - x.created_at).total_seconds() // 3600)} ساعت پیش)"
+                          for x in group]
+        return "\n".join(lines) + "\n\nجزئیات: /lead شماره"
+
+    def remind_leads(self) -> None:
+        """A lead still in the first stage after follow_up_hours: the owners are reminded once."""
+        if self.crm_cfg is None or not self.owners:
+            return
+        from ..db import Lead, LeadEvent
+        now = self.clock()
+        with self.sessions() as s:
+            due = [x for x in crm.overdue(s, self.crm_cfg, now)
+                   if s.execute(select(LeadEvent.id).where(LeadEvent.lead_id == x.id, LeadEvent.kind == "reminded")).first() is None]
+        for lead in due:
+            for chat in self.owners:
+                self.api.send_text(chat, self.lead_card(lead, f"⏰ سرنخ {lead.id} بیش از {self.crm_cfg.follow_up_hours} ساعت است "
+                                                               "منتظر تماس است"), buttons=self._lead_buttons(lead))
+            with self.sessions.begin() as s:
+                s.add(LeadEvent(lead_id=lead.id, actor="system:reminder", kind="reminded", data={}, ts=now))
 
     # ------------------------------------------------------------------ publish reports
 

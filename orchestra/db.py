@@ -321,6 +321,46 @@ class ContentPlanRow(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class Lead(Base):
+    """A financing lead. Personal details live only here (and in the owner's chat), never in a model prompt or the
+    audit chain."""
+
+    __tablename__ = "leads"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    channel: Mapped[str] = mapped_column(String(16))  # telegram | bale | manual
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ref: Mapped[str | None] = mapped_column(String(64), nullable=True)  # where it came from (?start=...)
+    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    stage: Mapped[str] = mapped_column(String(32), default="new")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    first_contact_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class LeadEvent(Base):
+    __tablename__ = "lead_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    actor: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))  # created | updated | stage | note | reminded
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class IntakeChat(Base):
+    """Where one person is in the intake bot's questions (kept so a restart does not lose a half-filled form)."""
+
+    __tablename__ = "intake_chats"
+    key: Mapped[str] = mapped_column(String(96), primary_key=True)  # "<org>:<platform>:<user id>"
+    step: Mapped[int] = mapped_column(Integer, default=-1)  # -1: not started; len(questions): confirming
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 def make_engine(url: str) -> Engine:
     engine = create_engine(url, future=True, pool_pre_ping=True)
     if engine.dialect.name == "sqlite":

@@ -107,6 +107,13 @@ class Report:
     plans: PlanStats = field(default_factory=PlanStats)
     pillar_names: dict[str, str] = field(default_factory=dict)
     paused: bool = False
+    crm: bool = False
+    leads_new: int = 0
+    leads_by_ref: Counter = field(default_factory=Counter)
+    leads_by_stage: Counter = field(default_factory=Counter)  # where this period's new leads are now
+    median_first_contact_minutes: float | None = None
+    leads_overdue: list[int] = field(default_factory=list)  # waiting for a first contact longer than follow_up_hours, now
+    stage_names: dict[str, str] = field(default_factory=dict)
 
 
 def _minutes(a: datetime, b: datetime) -> float:
@@ -202,9 +209,32 @@ def build_report(session: Session, org_id: str, *, end_day: date, days: int, now
             rep.pillar_names = {p.id: p.name_fa for p in policy.pillars} if policy else {}
         except PlanError:
             pass  # ids are shown instead
+    _crm_stats(session, rep, org_id, lo, hi, now, root)
     control = session.get(OrgControl, org_id)
     rep.paused = bool(control and control.paused)
     return rep
+
+
+def _crm_stats(session: Session, rep: Report, org_id: str, lo: datetime, hi: datetime, now: datetime, root) -> None:
+    from ..crm.store import CrmError, load_crm, overdue
+    from ..db import Lead
+    try:
+        cfg = load_crm(org_id, root)
+    except CrmError:
+        return
+    if cfg is None:
+        return
+    rep.crm = True
+    rep.stage_names = {s.id: s.name_fa for s in cfg.stages}
+    contact = []
+    for x in session.execute(select(Lead).where(Lead.org_id == org_id, Lead.created_at >= lo, Lead.created_at < hi)).scalars():
+        rep.leads_new += 1
+        rep.leads_by_ref[x.ref or "مستقیم"] += 1
+        rep.leads_by_stage[x.stage] += 1
+        if x.first_contact_at is not None:
+            contact.append(_minutes(x.created_at, x.first_contact_at))
+    rep.median_first_contact_minutes = statistics.median(contact) if contact else None
+    rep.leads_overdue = [x.id for x in overdue(session, cfg, now)]
 
 
 def _plan_stats(session: Session, org_id: str, start_day: date, end_day: date, now: datetime) -> PlanStats:
@@ -270,6 +300,9 @@ def observations(rep: Report) -> list[str]:
     out = []
     if rep.paused:
         out.append("⏸ انتشار الان متوقف است؛ برای ادامه /resume را بزنید.")
+    if rep.leads_overdue:
+        out.append(f"📇 {_n(len(rep.leads_overdue))} سرنخ تامین مالی هنوز منتظر اولین تماس است: " +
+                   "، ".join(f"/lead {i}" for i in rep.leads_overdue[:5]))
     if rep.unknown_jobs:
         out.append(f"❓ {_n(len(rep.unknown_jobs))} ارسال «نامعلوم» منتظر بررسی شماست: " +
                    "، ".join(f"/sent {j} یا /retry {j}" for j in rep.unknown_jobs[:3]))
@@ -301,7 +334,7 @@ def observations(rep: Report) -> list[str]:
 def report_text(rep: Report) -> str:
     head = f"📊 گزارش عملکرد تیم — {long_date(rep.start)}" + ("" if rep.start == rep.end else f" تا {long_date(rep.end)}")
     lines = [head]
-    if not rep.runs and not sum(rep.jobs.values()) and not rep.plans.planned:
+    if not rep.runs and not sum(rep.jobs.values()) and not rep.plans.planned and not rep.leads_new and not rep.leads_overdue:
         return head + "\nدر این دوره کاری انجام نشده است."
 
     lines += ["", "🧾 تولید محتوا",
@@ -349,6 +382,13 @@ def report_text(rep: Report) -> str:
         if rep.warning_rules:
             lines.append("• هشدار: " + "، ".join(f"{RULE_FA.get(k, k)} {_n(v)}" for k, v in rep.warning_rules.most_common(4)))
 
+    if rep.crm and (rep.leads_new or rep.leads_overdue):
+        lines += ["", "📇 سرنخ‌های تامین مالی (CRM)",
+                  f"• {_n(rep.leads_new)} سرنخ تازه" + ("؛ از: " + "، ".join(f"{k} {_n(v)}" for k, v in rep.leads_by_ref.most_common())
+                                                      if rep.leads_new else "")]
+        if rep.leads_new:
+            lines.append("• وضعیت امروزشان: " + "، ".join(f"{rep.stage_names.get(k, k)} {_n(v)}" for k, v in rep.leads_by_stage.most_common()))
+            lines.append(f"• فاصلهٔ ثبت تا اولین تماس (میانه): {_duration(rep.median_first_contact_minutes)}")
     if rep.llm_calls:
         cost = f"؛ هزینه {_n(rep.llm_cost, 2)} دلار" if rep.llm_cost is not None else ""
         lines += ["", "🤖 مدل زبانی",

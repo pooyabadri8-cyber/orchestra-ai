@@ -17,6 +17,7 @@
     python -m orchestra.cli plan [--start 2026-11-28]   the marketing agent proposes the content calendar
     python -m orchestra.cli plan-approve PLAN_ID / plan-reject PLAN_ID   (items run while `serve` is on)
     python -m orchestra.cli report [--days 7] [--end 2026-11-28]           the team's performance report
+    python -m orchestra.cli leads [ID --stage contacted]                    financing leads (CRM)
 """
 from __future__ import annotations
 
@@ -586,6 +587,7 @@ def cmd_serve(cfg: Settings, a) -> None:
     svc = ControlService(org_id=a.org, api=api, engine=DbosEngine(cfg, rtm, dbos, pub), sessions=rtm.sessions,
                          assets=rtm.assets, owners=owners, schedule=schedule, poll_seconds=cfg.control_poll_seconds,
                          orgs_root=cfg.orgs_dir)
+    _attach_intake(cfg, a.org, svc, base_for={"telegram": cfg.telegram_api_base, "bale": cfg.bale_api_base})
     print(f"ربات کنترل روشن است ({cfg.control_platform}). برای خاموش کردن، همین پنجره را ببندید.", flush=True)
     if not owners:
         print("هنوز هیچ شناسه‌ای مجاز نیست: به ربات یک پیام بدهید تا شناسه‌تان را بگوید، بعد آن را در ORCHESTRA_CONTROL_CHAT_IDS بنویسید.", flush=True)
@@ -673,6 +675,51 @@ def cmd_report(cfg: Settings, a) -> None:
         print(rp.report_text(rp.build_report(s, a.org, end_day=end, days=a.days, now=now, root=cfg.orgs_dir)))
 
 
+def _attach_intake(cfg: Settings, org: str, svc, base_for: dict) -> None:
+    """The public intake bot (orgs/<org>/crm.yaml), in the same process as the control bot."""
+    from .control.botapi import BotApi
+    from .crm.intake import IntakeBot
+    from .crm.store import CrmError, load_crm
+    try:
+        crm_cfg = load_crm(org, cfg.orgs_dir)
+    except CrmError as e:
+        sys.exit(f"تنظیمات CRM خراب است: {e}")
+    if crm_cfg is None:
+        return
+    svc.crm_cfg = crm_cfg
+    token = os.environ.get(crm_cfg.intake.token_env, "")
+    if not token:
+        print(f"CRM: ربات پذیرش خاموش است ({crm_cfg.intake.token_env} در .env نیست). /leads در ربات کنترل کار می‌کند.", flush=True)
+        return
+    if token == cfg.control_bot_token:
+        sys.exit("ربات پذیرش باید ربات جدایی از ربات کنترل باشد (توکن یکسان است). در @BotFather ربات دیگری بسازید.")
+    api = BotApi(crm_cfg.intake.platform, token, base_url=base_for.get(crm_cfg.intake.platform) or None)
+    svc.extra_ticks.append(IntakeBot(crm_cfg, api, svc.sessions, notify=svc.notify_lead).tick)
+    print(f"CRM: ربات پذیرش روشن است ({crm_cfg.intake.platform}). سرنخ‌ها همین‌جا اطلاع داده می‌شوند؛ /leads", flush=True)
+
+
+def cmd_leads(cfg: Settings, a, actor: str) -> None:
+    from .crm import store as crm
+    from .db import Lead, utcnow
+    crm_cfg = crm.load_crm(a.org, cfg.orgs_dir)
+    if crm_cfg is None:
+        sys.exit("CRM تنظیم نشده است (orgs/<org>/crm.yaml).")
+    sessions = _sessions(cfg)
+    if a.stage:
+        try:
+            with sessions.begin() as s:
+                crm.set_stage(s, crm_cfg, a.lead_id, a.stage, actor, utcnow())
+        except crm.CrmError as e:
+            sys.exit(str(e))
+        print(f"سرنخ {a.lead_id} → {crm_cfg.stage_fa(a.stage)}")
+        return
+    with sessions() as s:
+        rows = s.query(Lead).filter(Lead.org_id == a.org).order_by(Lead.id.desc()).limit(50).all()
+    for x in rows:
+        fields = " | ".join(f"{q.label}: {x.fields.get(q.id, '—')}" for q in crm_cfg.intake.questions)
+        print(f"#{x.id} [{crm_cfg.stage_fa(x.stage)}] {x.created_at.astimezone(TEHRAN):%Y-%m-%d %H:%M} {fields}")
+
+
 def cmd_jobs(cfg: Settings, a) -> None:
     with _sessions(cfg)() as s:
         for j in s.execute(select(PublishJob).order_by(PublishJob.id.desc()).limit(30)).scalars():
@@ -706,6 +753,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--note"); p.add_argument("--revise", type=int)
     p = sub.add_parser("plan-approve"); p.add_argument("plan_id", type=int)
     p = sub.add_parser("plan-reject"); p.add_argument("plan_id", type=int)
+    p = sub.add_parser("leads"); p.add_argument("--org", default="pouyan"); p.add_argument("lead_id", type=int, nargs="?")
+    p.add_argument("--stage")
     p = sub.add_parser("report"); p.add_argument("--org", default="pouyan"); p.add_argument("--days", type=int, default=7)
     p.add_argument("--end")
     a = ap.parse_args(argv)
@@ -741,6 +790,10 @@ def main(argv: list[str] | None = None) -> int:
         print("ثبت شد." if _publisher(cfg).confirm_sent(a.job_id, actor) else "این کار در وضعیت «نامعلوم» نیست.")
     elif a.cmd == "retry":
         print("دوباره در صف قرار گرفت." if _publisher(cfg).requeue(a.job_id, actor) else "این کار قابل ارسال دوباره نیست.")
+    elif a.cmd == "leads":
+        if a.stage and a.lead_id is None:
+            sys.exit("شمارهٔ سرنخ را بنویسید: leads 12 --stage contacted")
+        cmd_leads(cfg, a, actor)
     elif a.cmd == "report":
         cmd_report(cfg, a)
     elif a.cmd == "plan":
