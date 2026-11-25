@@ -27,11 +27,13 @@ def item(day, t, pillar, topic, angle="زاویه‌ای تازه برای مد�
     return {"day": day, "time": t, "pillar": pillar, "topic": topic, "angle": angle}
 
 
-GOOD = {"summary_fa": "هر روز یک محور، دور از گزارش ظهر.", "items": [
+NEWS = [{"day": d, "time": "09:30", "pillar": "news", "topic": "", "angle": ""}
+        for d in ("2026-11-28", "2026-11-29", "2026-11-30", "2026-12-01", "2026-12-02", "2026-12-03")]
+GOOD = {"summary_fa": "هر صبح خلاصهٔ خبر و هر روز یک محور، دور از گزارش ظهر.", "items": NEWS + [
     item("2026-11-28", "18:00", "proof", "crowd_track_record"),
-    item("2026-11-29", "10:00", "concerns", "crowd_concerns"),
+    item("2026-11-29", "15:00", "concerns", "crowd_concerns"),
     item("2026-11-30", "18:00", "path", "crowd_path"),
-    item("2026-12-01", "10:00", "identity", "crowd_intro"),
+    item("2026-12-01", "15:00", "identity", "crowd_intro"),
     item("2026-12-02", "18:30", "call", "crowd_cta"),
 ]}
 
@@ -42,7 +44,7 @@ def check(items):
 
 
 def test_policy_fixed_posts_and_next_week():
-    assert [p.id for p in POLICY.pillars] == ["proof", "concerns", "path", "identity", "call"]
+    assert [p.id for p in POLICY.pillars] == ["news", "proof", "concerns", "path", "identity", "call"]
     assert next_start(date(2026, 11, 26), "sat") == SAT and next_start(SAT, "sat") == date(2026, 12, 5)
     assert len(FIXED) == 5 and {f.time for f in FIXED} == {"12:45"}  # Saturday to Wednesday
 
@@ -60,9 +62,13 @@ def test_a_plan_that_keeps_every_rule_passes():
     (lambda it: it.__setitem__(0, item("2026-11-28", "18:00", "proof", "crowd_track_record", "سه طرح در ۲ سال")), "عدد"),
     (lambda it: it.__setitem__(0, item("2026-11-28", "18:00", "proof", "crowd_track_record", "سود تضمینی برای همه")), "عبارت ممنوع"),
     (lambda it: it.__setitem__(0, item("2026-11-28", "18:00", "nope", "crowd_track_record")), "وجود ندارد"),
-    (lambda it: it.pop(), "دقیقاً ۱".translate(str.maketrans("۱", "1"))),
-    (lambda it: it.extend([item("2026-11-28", "09:30", "call", "crowd_cta"),
-                           item("2026-11-28", "15:00", "call", "crowd_cta")]), "حداکثر 3"),  # four with the noon report
+    (lambda it: it.pop(), "دقیقاً 1"),
+    (lambda it: it.pop(0), "دقیقاً 6"),
+    (lambda it: it.append(item("2026-11-28", "15:00", "call", "crowd_cta")), "حداکثر 3"),  # four with news and the noon report
+    (lambda it: it.append(item("2026-12-02", "15:00", "call", "crowd_cta")), "حداکثر یک پست در روز"),
+    (lambda it: it.__setitem__(0, {**NEWS[0], "time": "11:30"}), "باید بین 09:00 و 10:30"),
+    (lambda it: it.__setitem__(0, {**NEWS[0], "angle": "فقط انرژی"}), "زاویه نمی‌گیرد"),
+    (lambda it: it.__setitem__(0, {**NEWS[0], "topic": "crowd_path"}), "موضوع نمی‌گیرد"),
 ])
 def test_every_broken_rule_is_named(change, problem):
     items = [dict(i) for i in GOOD["items"]]
@@ -91,7 +97,7 @@ def test_a_broken_plan_goes_back_once_with_the_reasons(sessions):
     bad = {"items": GOOD["items"][:4]}
     gw, prov = gateway(sessions, [bad, GOOD])
     plan = propose(gw)
-    assert len(plan.items) == 5 and plan.summary_fa and plan.policy.startswith("marketing#")
+    assert len(plan.items) == 11 and plan.summary_fa and plan.policy.startswith("marketing#")
     assert "دقیقاً" in prov.calls[1]
     gw, _ = gateway(sessions, ["not json", bad])
     with pytest.raises(PlanError):
@@ -100,7 +106,9 @@ def test_a_broken_plan_goes_back_once_with_the_reasons(sessions):
 
 def test_items_become_preset_requests_at_their_time():
     plan = ContentPlan(org_id="pouyan", start=SAT, days=7, items=tuple(PlanItem.model_validate(i) for i in GOOD["items"]))
-    it = plan.items[0]
+    news = plan.items[0]
+    assert preset_for(news, POLICY, KB) == {"template": "news_digest", "params": {}, "summary_fa": "خلاصهٔ خبرهای موثر بر بازار"}
+    it = plan.items[6]
     assert preset_for(it, POLICY, KB) == {"template": "topic_post", "summary_fa": "اثبات و کارنامه: کارنامهٔ پویان کراد",
                                           "params": {"topic": "crowd_track_record", "focus": it.angle}}
     assert publish_at(it).isoformat() == "2026-11-28T18:00:00+03:30"

@@ -84,12 +84,12 @@ def test_approved_plan_items_start_before_their_time_once(sessions, assets):
     clock.now = FIRST_PREP
     svc.tick()
     svc.tick()
-    assert len(engine.presets) == 1
+    assert len(engine.presets) == 1  # Saturday's 09:30 news is long past (the bot was "off"): only the 18:00 post starts
     preset, at = engine.presets[0]
     assert preset["template"] == "topic_post" and preset["params"]["topic"] == "crowd_track_record"
     assert at.isoformat() == "2026-11-28T18:00:00+03:30"
     with sessions() as s:
-        assert [r.origin for r in s.query(ControlRequest) if r.origin.startswith("plan:")] == ["plan:1:1"]
+        assert [r.origin for r in s.query(ControlRequest) if r.origin.startswith("plan:")] == ["plan:1:2"]
     assert "▶️ شروع شده" in svc.plans_text()
 
 
@@ -174,3 +174,15 @@ def test_a_broken_policy_file_does_not_stop_publishing(sessions, assets, monkeyp
     clock.now = FIRST_PREP
     svc.tick()
     assert called == [1] and engine.presets == []
+
+
+def test_the_morning_news_item_starts_as_a_news_digest(sessions, assets):
+    svc, api, engine, clock = make_bot(sessions, assets, [GOOD])
+    api.say("/plan")
+    svc.tick()
+    api.press("pok:1")
+    svc.tick()
+    clock.now = datetime(2026, 11, 28, 4, 30, tzinfo=timezone.utc)  # Saturday 08:00 in Tehran: 90 minutes before 09:30
+    svc.tick()
+    assert [(p["template"], p["params"], at.isoformat()) for p, at in engine.presets] == [
+        ("news_digest", {}, "2026-11-28T09:30:00+03:30")]

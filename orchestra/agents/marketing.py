@@ -121,6 +121,9 @@ class Pillar(BaseModel):
     template: str
     topics: tuple[str, ...] = ()
     per_period: int = Field(1, ge=0, le=20)
+    angle: bool = True  # False: the post's angle comes from the day's material (news), not from the plan
+    earliest: str | None = None  # this pillar's own hours, inside the posting hours (e.g. news in the morning)
+    latest: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -128,6 +131,14 @@ class Pillar(BaseModel):
         if not re.fullmatch(r"[a-z][a-z0-9_]{1,40}", v):
             raise ValueError(f"شناسهٔ محور نامعتبر: {v!r}")
         return v
+
+    @field_validator("earliest", "latest")
+    @classmethod
+    def _time(cls, v):
+        return None if v is None else _hhmm(v)
+
+    def hours(self, posting: "Posting") -> tuple[str, str]:
+        return self.earliest or posting.earliest, self.latest or posting.latest
 
 
 class MarketingPolicy(BaseModel):
@@ -178,6 +189,11 @@ def load_policy(org_id: str, root: str | Path = "orgs", *, knowledge: Knowledge 
             raise PlanError(f"{path}: محور {p.id} نوع کار ناشناخته دارد: {p.template}")
         if registry is not None and registry.templates[p.template].param("topic") is not None and not p.topics:
             raise PlanError(f"{path}: محور {p.id} باید topics داشته باشد")
+        if registry is not None and registry.templates[p.template].param("topic") is None and p.topics:
+            raise PlanError(f"{path}: محور {p.id} موضوع نمی‌گیرد ({p.template})؛ topics را بردارید")
+        lo, hi = p.hours(policy.posting)
+        if not _minutes(policy.posting.earliest) <= _minutes(lo) < _minutes(hi) <= _minutes(policy.posting.latest):
+            raise PlanError(f"{path}: ساعت محور {p.id} ({lo} تا {hi}) باید داخل ساعت انتشار باشد")
         if knowledge is not None:
             known = {t.id for t in knowledge.topics}
             missing = [t for t in p.topics if t not in known]
@@ -290,6 +306,7 @@ def validate_plan(items: list[PlanItem], *, policy: MarketingPolicy, start: date
     for f in fixed:
         per_day.setdefault(f.day, []).append((_minutes(f.time), f"«{f.name[:30]}» ساعت {f.time}"))
     counts: dict[str, int] = {}
+    pillar_days: set[tuple[date, str]] = set()
     for n, it in enumerate(items, 1):
         where = f"مورد {n} ({it.day.isoformat()} {it.time})"
         if not start <= it.day <= end:
@@ -310,7 +327,16 @@ def validate_plan(items: list[PlanItem], *, policy: MarketingPolicy, start: date
             problems.append(f"{where}: موضوع «{it.topic}» از موضوع‌های محور {p.id} نیست ({', '.join(p.topics)})")
         if not p.topics and it.topic:
             problems.append(f"{where}: محور {p.id} موضوع نمی‌گیرد")
-        if not it.angle:
+        lo, hi = p.hours(post)
+        if (p.earliest or p.latest) and not _minutes(lo) <= _minutes(it.time) <= _minutes(hi):
+            problems.append(f"{where}: ساعت پست‌های محور {p.id} باید بین {lo} و {hi} باشد")
+        if (it.day, p.id) in pillar_days:
+            problems.append(f"{where}: محور {p.id} در این روز پست دیگری هم دارد؛ هر محور حداکثر یک پست در روز")
+        pillar_days.add((it.day, p.id))
+        if not p.angle:
+            if it.angle:
+                problems.append(f"{where}: محور {p.id} زاویه نمی‌گیرد (angle را خالی بگذار)")
+        elif not it.angle:
             problems.append(f"{where}: زاویه (angle) خالی است")
         elif len(it.angle) > ANGLE_MAX:
             problems.append(f"{where}: زاویه بلندتر از {ANGLE_MAX} نویسه است")
@@ -319,7 +345,8 @@ def validate_plan(items: list[PlanItem], *, policy: MarketingPolicy, start: date
         else:
             problems += [f"{where}: {f.message}" for f in text_rules(it.angle, brand) if f.severity == "block"]
         try:
-            preset = {"template": p.template, "params": {**({"topic": it.topic} if it.topic else {}), "focus": it.angle}}
+            preset = {"template": p.template, "params": {**({"topic": it.topic} if it.topic else {}),
+                                                         **({"focus": it.angle} if it.angle else {})}}
             registry.instantiate(preset["template"], preset["params"], today=it.day, policy=org)
         except RegistryError as e:
             problems.append(f"{where}: {e}")
@@ -357,7 +384,13 @@ def system_prompt(brand: Brand, policy: MarketingPolicy, kb: Knowledge | None, s
     pillars = []
     for p in policy.pillars:
         topics = "، ".join(f"{t} ({_topic_title(kb, t)})" for t in p.topics) or "بدون موضوع"
-        pillars.append(f"- {p.id}: {p.name_fa} — {p.brief} | تعداد در این دوره: {p.per_period} | موضوع‌ها: {topics}")
+        extra = ""
+        if p.earliest or p.latest:
+            lo, hi = p.hours(policy.posting)
+            extra += f" | ساعت: بین {lo} و {hi}"
+        if not p.angle:
+            extra += " | angle خالی (زاویه را محتوای همان روز تعیین می‌کند)"
+        pillars.append(f"- {p.id}: {p.name_fa} — {p.brief} | تعداد در این دوره: {p.per_period} | موضوع‌ها: {topics}{extra}")
     lines = [
         f"تو مسئول تقویم محتوای کانال «{brand.name}» هستی. {brand.about}",
         f"مخاطب: {brand.audience}",
@@ -369,7 +402,8 @@ def system_prompt(brand: Brand, policy: MarketingPolicy, kb: Knowledge | None, s
         f"- ساعت هر پست بین {post.earliest} و {post.latest} به وقت تهران، به شکل HH:MM.",
         f"- در هر روز حداکثر {post.max_per_day} پست، با احتساب پست‌های ثابت.",
         f"- فاصلهٔ هر دو پست یک روز (پست‌های ثابت هم) حداقل {post.min_gap_minutes} دقیقه.",
-        "- تعداد پست هر محور دقیقاً همان عدد گفته‌شده است، و topic فقط از موضوع‌های همان محور.",
+        "- تعداد پست هر محور دقیقاً همان عدد گفته‌شده است، و topic فقط از موضوع‌های همان محور (محور بدون موضوع: topic خالی).",
+        "- هر محور حداکثر یک پست در روز؛ اگر محوری ساعت خودش را دارد، فقط در همان ساعت‌ها.",
         f"- angle یک جملهٔ کوتاه فارسی (حداکثر {ANGLE_MAX} نویسه) و بدون هیچ عدد است: این پست از چه زاویه‌ای به موضوع می‌پردازد.",
         "  توصیهٔ خرید و فروش، وعدهٔ سود، پیش‌بینی، لینک و نام صندوق‌ها ممنوع است.",
         "",
