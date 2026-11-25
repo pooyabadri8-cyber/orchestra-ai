@@ -77,13 +77,30 @@ async def s_acquire(run_id: str, source_id: str) -> dict:
     return {"snapshot_id": got.snapshot_id, "warnings": got.warnings}
 
 
+@DBOS.step(retries_allowed=True, max_attempts=3, interval_seconds=20, backoff_rate=2)
+async def s_acquire_official(source_id: str = "tse_bourse") -> dict:
+    """TSE's market overview: whether today is a trading day, and the index. Missing or unreachable -> {"error"}."""
+    r = rt()
+    if source_id not in r.sources:
+        return {"error": f"منبع «{source_id}» تنظیم نشده است"}
+    try:
+        with r.sessions.begin() as s:
+            got = await acquire(s, r.assets, r.sources[source_id], r.fetcher, r.clock())
+    except AcquisitionError as e:
+        if e.retryable:
+            raise
+        return {"error": str(e)}
+    return {"snapshot_id": got.snapshot_id}
+
+
 @DBOS.step()
-def s_analyze(org_id: str, snapshot_id: str, day_iso: str) -> dict:
+def s_analyze(org_id: str, snapshot_id: str | None, day_iso: str, official_snapshot_id: str | None = None) -> dict:
     r = rt()
     brand = load_brand(org_id, r.brand_root)
     try:
         with r.sessions() as s:
-            rep = analyze_market_close(s, snapshot_id, brand, date.fromisoformat(day_iso))
+            rep = analyze_market_close(s, snapshot_id, brand, date.fromisoformat(day_iso),
+                                       official_snapshot_id=official_snapshot_id)
     except InsufficientData as e:
         return {"skip": str(e)}
     return {"report": rep.model_dump(mode="json")}
@@ -141,11 +158,13 @@ def s_package(org_id: str, run_id: str, verified: dict, destinations: list[list[
         pkg = build_text_package(
             brand=brand, run_id=run_id, content_class="market_close", parts=parts, claims=claims, data_points=refs,
             destinations=[(d, p) for d, p in destinations], versions={"workflow": TEMPLATE, "writer_prompt": PROMPT_VERSION},
-            expires_at=now + timedelta(minutes=window_minutes), risk_level="low",
+            expires_at=now + timedelta(minutes=window_minutes),
+            risk_level="medium" if any(f["severity"] == "warn" for f in verified["findings"]) else "low",
         )
         store_package(s, pkg, actor=f"workflow:{run_id}")
         run = s.get(Run, run_id)
         run.package_id, run.status = pkg.package_id, "awaiting_approval"
+        run.findings = verified["findings"]  # data warnings and checker remarks, shown to the approver
     return {"package_id": pkg.package_id, "package_hash": pkg.package_hash}
 
 
@@ -202,13 +221,17 @@ async def _market_close(org_id: str, day_iso: str, destinations: list[list[str]]
     run_id = DBOS.workflow_id
     s_start(run_id, org_id)
     try:
+        official = await s_acquire_official()
+    except Exception as e:  # noqa: BLE001  TSE unreachable after the retries: the page alone, with a warning
+        official = {"error": str(e)}
+    try:
         got = await s_acquire(run_id, source_id)
     except Exception as e:  # retries exhausted
-        return s_finish(run_id, "failed", detail={"error": f"acquire: {e}"})
-    if "error" in got:
+        got = {"error": f"acquire: {e}"}
+    if "error" in got and "snapshot_id" not in official:
         return s_finish(run_id, "failed", detail={"error": got["error"]})
 
-    analysed = s_analyze(org_id, got["snapshot_id"], day_iso)
+    analysed = s_analyze(org_id, got.get("snapshot_id"), day_iso, official.get("snapshot_id"))
     if "skip" in analysed:
         return s_finish(run_id, "skipped", detail={"reason": analysed["skip"]})
 
@@ -228,6 +251,9 @@ async def _market_close(org_id: str, day_iso: str, destinations: list[list[str]]
     if verified["blocked"]:
         return s_finish(run_id, "blocked", findings=verified["findings"])
 
+    data_notes = [{"severity": "warn", "rule_id": "DATA-MARKET", "message": n, "field": "data"}
+                  for n in analysed["report"].get("notes", [])]
+    verified = {**verified, "findings": [*data_notes, *verified["findings"]]}
     pkg = s_package(org_id, run_id, verified, destinations, window_minutes)
     await s_request_approval(org_id, run_id, pkg["package_id"], pkg["package_hash"])
 

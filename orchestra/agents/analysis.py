@@ -17,6 +17,7 @@ from ..content.calendar import long_date
 from ..content.numbers import BoundPoint, format_point
 from ..db import DataPointRow
 from ..visual.charts import ChartSpec
+from .freshness import plan_market_data
 
 LABELS = {
     "index.total.value": "شاخص کل بورس",
@@ -46,6 +47,7 @@ class AnalysisReport(BaseModel):
     facts: tuple[str, ...]
     excluded: tuple[str, ...]  # subjects removed because of a forbidden topic, for the audit trail
     charts: tuple[ChartSpec, ...] = ()
+    notes: tuple[str, ...] = ()  # for the approver (data warnings), never shown to the writer
 
     def by_key(self) -> dict[str, BoundPoint]:
         return {p.key: p for p in self.points}
@@ -55,21 +57,48 @@ class InsufficientData(Exception):
     pass
 
 
-def analyze_market_close(session: Session, snapshot_id: str, brand: Brand, run_date: date | None = None) -> AnalysisReport:
-    rows = session.execute(select(DataPointRow).where(DataPointRow.snapshot_id == snapshot_id)).scalars().all()
+INDEX_METRICS = ("index.total.value", "index.total.change", "index.total.change_pct")
+RETAIL_METRICS = ("retail.trade_value", "retail.real_money_net")
+
+
+def _rows(session: Session, snapshot_id: str | None) -> dict[str, list[DataPointRow]]:
     by_metric: dict[str, list[DataPointRow]] = {}
-    for r in rows:
-        by_metric.setdefault(r.metric, []).append(r)
-    for needed in ("index.total.value", "index.total.change_pct", "retail.trade_value"):
-        if needed not in by_metric:
+    if snapshot_id:
+        for r in session.execute(select(DataPointRow).where(DataPointRow.snapshot_id == snapshot_id)).scalars():
+            by_metric.setdefault(r.metric, []).append(r)
+    return by_metric
+
+
+def analyze_market_close(session: Session, snapshot_id: str | None, brand: Brand, run_date: date | None = None, *,
+                         official_snapshot_id: str | None = None) -> AnalysisReport:
+    """`snapshot_id`: the market page (bourse-trader), or None when it could not be read. `official_snapshot_id`: TSE's
+    market overview, which confirms the trading day and gives the index (see agents/freshness.py)."""
+    page = _rows(session, snapshot_id)
+    tse = _rows(session, official_snapshot_id)
+    flat = lambda rows: {m: rs[0].value for m, rs in rows.items() if rs[0].subject is None}  # noqa: E731
+    plan = plan_market_data(run_date or date.today(), flat(tse) if official_snapshot_id else None,
+                            flat(page) if snapshot_id else None)
+    if plan.skip:
+        raise InsufficientData(plan.skip)
+    notes = list(plan.notes)
+    use_page = plan.use_page
+    trade = (page.get("retail.trade_value") or [None])[0]
+    if use_page and (trade is None or trade.value <= 0):
+        if not plan.confirmed:  # nothing else says the market traded today
+            raise InsufficientData("ارزش معاملات صفر است یا خوانده نشد؛ بازار هنوز باز نشده یا امروز تعطیل است")
+        use_page = False
+        notes.append("ارزش معاملات خرد در bourse-trader صفر بود یا خوانده نشد؛ بخش معاملات خرد، پول حقیقی و گروه‌ها کنار گذاشته شد.")
+    index_rows = tse if plan.index_from == "tse" else page
+    for needed in ("index.total.value", "index.total.change_pct"):
+        if needed not in index_rows:
             raise InsufficientData(f"دادهٔ «{LABELS[needed]}» در این نمونه نیست")
-    trade = by_metric["retail.trade_value"][0]
-    if trade.value <= 0:
-        raise InsufficientData("ارزش معاملات صفر است؛ بازار هنوز باز نشده یا امروز تعطیل است")
 
     chosen: list[DataPointRow] = []
     excluded: list[str] = []
-    for metric in ("index.total.value", "index.total.change", "index.total.change_pct", "retail.trade_value", "retail.real_money_net"):
+    for metric in INDEX_METRICS:
+        chosen += index_rows.get(metric, [])[:1]
+    by_metric = page if use_page else {}
+    for metric in RETAIL_METRICS:
         chosen += by_metric.get(metric, [])[:1]
     for metric in ("real_money_net.group.top_in", "real_money_net.group.top_out"):
         kept = 0
@@ -89,7 +118,8 @@ def analyze_market_close(session: Session, snapshot_id: str, brand: Brand, run_d
     if run_date is not None:  # the date is bound data too, so the writer never types it
         points.append(BoundPoint(key="D1", point_id=f"date:{run_date.isoformat()}", metric="run.date", label="تاریخ امروز",
                                  value=0, unit="date", decimals=0, subject=long_date(run_date), formats=("name",)))
-    return AnalysisReport(snapshot_id=snapshot_id, points=tuple(points), facts=tuple(_facts(points)), excluded=tuple(excluded))
+    return AnalysisReport(snapshot_id=snapshot_id or official_snapshot_id or "", points=tuple(points),
+                          facts=tuple(_facts(points)), excluded=tuple(excluded), notes=tuple(notes))
 
 
 def _facts(points: list[BoundPoint]) -> list[str]:

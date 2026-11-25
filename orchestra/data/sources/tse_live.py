@@ -105,6 +105,40 @@ class TseIndicesSource:
         return ParseResult(points=points, warnings=warnings)
 
 
+class TseBourseSource:
+    """The Bourse's total index today and the trading day it belongs to: the official figures that decide whether
+    there is a report today, and that the market page is checked against (see agents/freshness.py)."""
+    source_id = "tse_bourse"
+    parser_version = "tse_overview_bourse@1"
+
+    def __init__(self, cdn_base: str = DEFAULT_CDN):
+        self.url = f"{cdn_base.rstrip('/')}/api/MarketData/GetMarketOverview/1"
+
+    def parse(self, raw: bytes) -> ParseResult:
+        o = _load(raw, "marketOverview")
+        if not isinstance(o, dict):
+            raise ParseError("TSE: خلاصهٔ بورس خالی است")
+        last, change = _num(o.get("indexLastValue"), "شاخص کل"), _num(o.get("indexChange"), "تغییر شاخص کل")
+        day = int(_num(o.get("marketActivityDEven"), "تاریخ معاملات"))
+        if last <= 0 or not 20000101 < day < 21000101:
+            raise ParseError("TSE: شاخص کل یا تاریخ معاملات معتبر نیست")
+        prev = last - change
+        title = fa_text(o.get("marketStateTitle") or "")
+        points = [
+            ParsedPoint("index.total.value", last, "point", 0, str(o.get("indexLastValue"))),
+            ParsedPoint("index.total.change", change, "point", 0, str(o.get("indexChange"))),
+            ParsedPoint("index.total.change_pct", change / prev * 100 if prev > 0 else 0.0, "percent", 2,
+                        f"{o.get('indexChange')} / {prev}"),
+            ParsedPoint("market.trading_day", float(day), "date", 0, str(day)),
+        ]
+        warnings = []
+        if title:  # "بسته" once the session is over; anything else means the figures may still move
+            points.append(ParsedPoint("market.closed", 1.0 if "بسته" in title else 0.0, "flag", 0, title))
+        else:
+            warnings.append("TSE: وضعیت بازار (باز/بسته) در پاسخ نبود")
+        return ParseResult(points=points, warnings=warnings)
+
+
 class TseFarabourseSource:
     """The Farabourse index today, and the trading day the TSE figures belong to."""
     source_id = "tse_farabourse"

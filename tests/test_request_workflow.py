@@ -500,3 +500,35 @@ def test_active_lessons_reach_the_writer_and_editor_and_are_recorded(engine):
     assert "یک جملهٔ جمع‌بندی" in calls["write.1"] and "یک جملهٔ جمع‌بندی" in calls["review.editor.1"]
     assert "یک جملهٔ جمع‌بندی" not in calls["review.compliance.1"] and "یک جملهٔ جمع‌بندی" not in calls["manager.plan.0"]
     assert content["versions"]["lessons"] == memory.fingerprint(("در پایان هر پست یک جملهٔ جمع‌بندی بیاید",))
+
+
+def test_no_report_when_tse_says_today_was_not_a_trading_day(engine):
+    import wf_support
+    rtm, prov, _ = runtime(engine, [PLAN])
+    wf_support.TSE_DAY = "20261110"  # a holiday: the market page still shows the last trading day
+    try:
+        rid, handle = start()
+        out = handle.get_result()
+    finally:
+        wf_support.TSE_DAY = "20261111"
+    assert out["status"] == "skipped" and "روز معاملاتی" in out["reason"]
+    assert len(prov.calls) == 1  # only the Manager: nothing was written
+
+
+def test_a_stale_market_page_is_left_out_and_the_owner_is_told(engine):
+    import wf_support
+    draft = {**DRAFT, "post": {**DRAFT["post"], "paragraphs": [
+        "شاخص کل با رشد {{P3|abs_pct}} به {{P1|int}} واحد رسید.", "شاخص کل امروز در {{D1|name}} رشد کرد."]}}
+    plan = {**PLAN, "params": {"platforms": ["telegram", "bale"]}}  # the post only: the slides would need the groups
+    rtm, prov, _ = runtime(engine, [plan, draft, CLEAN, CLEAN])
+    wf_support.TSE_INDEX = (8_150_000.0, 173_600.0)  # TSE moved on; the page did not
+    try:
+        rid, handle = start()
+        status = wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked", "skipped"}, timeout=90)
+    finally:
+        wf_support.TSE_INDEX = (7_976_400.0, 186_492.0)
+    assert "ارزش معاملات خرد" not in prov.calls[1]  # the writer never saw the stale figures
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        notes = [f["message"] for f in run.findings or [] if f["rule_id"] == "DATA-MARKET"]
+    assert any("bourse-trader" in n for n in notes), (status, run.detail)

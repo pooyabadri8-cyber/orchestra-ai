@@ -125,13 +125,31 @@ def test_same_run_cannot_start_twice(engine):
     _, pkg = package_of(rtm.sessions)
     wf.submit_decision(RUN, pkg.package_hash, "approved", "user:1")
     assert h1.get_result() == h2.get_result() and len(prov.calls) == 1
-    with rtm.sessions() as s:
-        assert s.execute(select(func.count(DataSnapshot.id))).scalar_one() == 1
+    with rtm.sessions() as s:  # each source (TSE's overview, the market page) fetched once
+        per_source = s.execute(select(DataSnapshot.source_id, func.count(DataSnapshot.id)).group_by(DataSnapshot.source_id)).all()
+        assert len(per_source) == 2 and all(n == 1 for _, n in per_source)
 
 
 def test_closed_market_is_skipped(engine):
-    rtm, prov, _ = make_runtime(engine, [GOOD], page=PAGE.replace(b">18.6T<", b">0<"))
-    assert launch(rtm).get_result()["status"] == "skipped" and prov.calls == []
+    """Closed means TSE's last trading day is not today (agents/freshness.py); the market page alone cannot say it."""
+    import wf_support
+    rtm, prov, _ = make_runtime(engine, [GOOD])
+    wf_support.TSE_DAY = "20261110"
+    try:
+        assert launch(rtm).get_result()["status"] == "skipped" and prov.calls == []
+    finally:
+        wf_support.TSE_DAY = "20261111"
+
+
+def test_a_market_page_with_no_trading_is_left_out_when_tse_confirms_the_day(engine):
+    rtm, prov, _ = make_runtime(engine, [{**GOOD, "paragraphs": ["شاخص کل امروز {{P3|abs_pct}} رشد کرد.",
+                                                                  "شاخص کل به {{P1|int}} واحد رسید."]}],
+                                page=PAGE.replace(b">18.6T<", b">0<"))
+    launch(rtm)
+    assert wait_for_status(rtm.sessions, RUN, {"awaiting_approval", "failed", "skipped"}) == "awaiting_approval"
+    assert ": ارزش معاملات خرد |" not in prov.calls[0] and ": شاخص کل بورس |" in prov.calls[0]  # no page figures in the table
+    with rtm.sessions() as s:
+        assert any("صفر" in f["message"] for f in s.get(Run, RUN).findings or [])
 
 
 @pytest.mark.parametrize("how", ["start", "start_cli_exit"])

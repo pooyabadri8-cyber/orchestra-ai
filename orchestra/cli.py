@@ -86,7 +86,7 @@ def _runtime(cfg: Settings) -> Runtime:
     if cfg.bourse_trader_url:
         market.url = cfg.bourse_trader_url
     from .data.sources.tgju import TgjuSource
-    from .data.sources.tse_live import TseFarabourseSource, TseIndicesSource
+    from .data.sources.tse_live import TseBourseSource, TseFarabourseSource, TseIndicesSource
     fx = TgjuSource()
     if cfg.tgju_url:
         fx.url = cfg.tgju_url
@@ -95,7 +95,8 @@ def _runtime(cfg: Settings) -> Runtime:
                                    max_calls_per_run=cfg.llm_max_calls_per_run),
                    fetcher=http_fetcher(), news_fetcher=_news_fetcher(cfg.foreign_proxy), sources={"bourse_trader": market, "tgju": fx,
                                                     "tse_indices": TseIndicesSource(cfg.tse_cdn_base),
-                                                    "tse_farabourse": TseFarabourseSource(cfg.tse_cdn_base)},
+                                                    "tse_farabourse": TseFarabourseSource(cfg.tse_cdn_base),
+                                                    "tse_bourse": TseBourseSource(cfg.tse_cdn_base)},
                    brand_root=cfg.orgs_dir,
                    tse_old_base=cfg.tse_old_base, tse_cdn_base=cfg.tse_cdn_base)
 

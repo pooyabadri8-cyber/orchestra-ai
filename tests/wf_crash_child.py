@@ -49,7 +49,9 @@ with rtm.sessions() as s:
     report = {
         "status": result["status"],
         "llm_calls": s.execute(select(func.count(LLMCall.id))).scalar_one(),
-        "snapshots": s.execute(select(func.count(DataSnapshot.id))).scalar_one(),
+        # the most times any one source was fetched (each source once: nothing redone after the restart)
+        "snapshots": max(n for _, n in s.execute(select(DataSnapshot.source_id, func.count(DataSnapshot.id))
+                                                 .group_by(DataSnapshot.source_id)).all()),
         "jobs": s.execute(select(func.count(PublishJob.id))).scalar_one(),
     }
 DBOS.destroy()
