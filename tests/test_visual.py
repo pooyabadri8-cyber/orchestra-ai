@@ -71,3 +71,13 @@ def test_a_full_slide_leaves_out_its_last_sentences_instead_of_stopping():
     assert m["dropped"] and m["scale"] >= 0.68 and len(images) == 3
     assert all(b.startswith(str(i)) for i, b in enumerate(m["dropped"], 7 - len(m["dropped"])))  # from the end, whole sentences
     assert images[2].kind == "end" and images[2].manifest["dropped"] == []
+
+
+def test_a_short_slide_gets_larger_type_and_a_full_one_does_not():
+    short = RenderedSlide(title="بررسی زمان تسویه معاملات", bullets=("طرح یکسان‌سازی دوره تسویه ابزارها",
+                                                                      "ضرورت به‌روزرسانی زیرساخت‌های فنی"), stats=())
+    full = RenderedSlide(title="تحلیل تکنیکال شاخص کل", bullets=("شاخص بالای میانگین پنجاه‌روزه است.",),
+                         stats=(("حمایت", "۸٬۱۲۰٬۴۵۰"), ("مقاومت", "۸٬۶۰۵٬۲۲۰")), chart=LINE)
+    imgs = asyncio.run(render_carousel(BRAND, [short, full]))
+    assert imgs[0].manifest["scale"] > 1 and imgs[1].manifest["scale"] <= 1
+    assert imgs[0].manifest["dropped"] == [] and imgs[1].manifest["dropped"] == []

@@ -22,10 +22,11 @@ from ..brand import Brand
 from ..content.numbers import FA
 from .svg import render_svg
 
-TEMPLATE_VERSION = "carousel@2"
+TEMPLATE_VERSION = "carousel@3"
 WIDTH, HEIGHT = 1080, 1350
 FONT_DIR = Path(__file__).resolve().parent / "fonts"
 SCALES = (1.0, 0.92, 0.84, 0.76, 0.68)
+GROW = (1.4, 1.3, 1.2, 1.1)  # a short slide gets larger type, so the page is not half empty
 READABLE = 3  # the first three sizes are comfortable on a phone; smaller only if leaving out sentences is not enough
 JPEG_QUALITY = 92
 MIME = "image/jpeg"
@@ -75,6 +76,7 @@ h1{{font-weight:800;font-size:calc(66px*var(--s));line-height:1.35}}
 
 .stats{{display:grid;grid-template-columns:1fr 1fr;gap:22px}}
 .stat{{background:{c.surface};border-radius:24px;padding:calc(26px*var(--s)) 30px;border-right:8px solid {c.accent}}}
+.stat:only-child{{grid-column:1 / -1}}
 .stat .v{{font-weight:800;font-size:calc(46px*var(--s));line-height:1.3;color:{c.text}}}
 .stat .l{{font-size:calc(27px*var(--s));color:{c.muted};margin-top:6px}}
 ul{{list-style:none;display:flex;flex-direction:column;gap:calc(20px*var(--s))}}
@@ -83,6 +85,7 @@ li::before{{content:"";position:absolute;right:0;top:.72em;width:14px;height:14p
 .chart{{background:{c.surface};border:2px solid #DCE5EF;border-radius:28px;padding:26px 20px 14px}}
 .chart .ct{{font-weight:700;font-size:28px;color:{c.muted};margin:0 10px 12px}}
 .chart svg{{width:100%;height:auto;max-height:calc(560px*var(--s));display:block}}
+.body{{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center;gap:calc(34px*var(--s))}}
 .foot{{position:absolute;bottom:58px;right:80px;left:80px;display:flex;justify-content:space-between;font-size:26px;color:{c.muted}}}
 .end{{justify-content:center;align-items:flex-start}}
 .end h1{{font-size:calc(64px*var(--s))}}
@@ -134,7 +137,7 @@ def slide_html(brand: Brand, slide, n: int, total: int) -> str:
             chart = f'<div class="chart"><div class="ct">{_e(slide.chart.title)}</div>{render_svg(slide.chart, brand.colors)}</div>'
         bullets = f'<ul>{"".join(f"<li>{_e(b)}</li>" for b in slide.bullets)}</ul>' if slide.bullets else ""
         body = (f'<div class="slide"><div class="bar"></div>{_head(brand)}'
-                f'<h1>{_e(slide.title)}</h1>{stats}{chart}{bullets}{foot}</div>')
+                f'<div class="body"><h1>{_e(slide.title)}</h1>{stats}{chart}{bullets}</div>{foot}</div>')
     return f'<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><style>{_css(brand)}</style></head><body>{body}</body></html>'
 
 
@@ -145,7 +148,10 @@ _QC_JS = """async () => {
   const slide = document.querySelector('.slide');
   const foot = document.querySelector('.foot').getBoundingClientRect();
   let overflow = [];
-  for (const el of slide.children) {
+  const box = document.querySelector('.body');
+  if (box && box.scrollHeight > box.clientHeight + 1) overflow.push('tall:body');
+  for (const el of [...slide.children, ...(box ? box.children : [])]) {
+    if (el === box) continue;
     if (el.classList.contains('foot') || el.classList.contains('bar')) continue;
     const r = el.getBoundingClientRect();
     if (r.bottom > foot.top - 12 || r.left < 40 || r.right > %d - 40) overflow.push(el.tagName + '.' + el.className);
@@ -228,7 +234,9 @@ async def render_carousel(brand: Brand, slides, claims=(), *, browser=None) -> l
         for n, original in enumerate(items, 1):
             fitted, found = None, False
             # readable type with fewer sentences beats every sentence in small type
-            tries = [(v, sc) for sizes in (SCALES[:READABLE], SCALES[READABLE:]) for v in _shorter_versions(original) for sc in sizes]
+            # the largest type that fits: grow a short slide; then the readable sizes, leaving out sentences; then smaller
+            grow = [(original, sc) for sc in GROW] if original is not None and original.kind == "content" else []
+            tries = grow + [(v, sc) for sizes in (SCALES[:READABLE], SCALES[READABLE:]) for v in _shorter_versions(original) for sc in sizes]
             for slide, scale in tries:
                 doc = slide_html(brand, slide, n, total)
                 await page.set_content(doc.replace("--s:1", f"--s:{scale}"), wait_until="load")
