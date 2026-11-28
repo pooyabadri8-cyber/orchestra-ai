@@ -79,6 +79,7 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /leads — سرنخ‌های باز تامین مالی
 /lead شماره — جزئیات و سابقهٔ یک سرنخ
 /note شماره متن — یادداشت روی سرنخ
+/check — بررسی سلامت: چه چیزی درست کار می‌کند و چه چیزی باید درست شود
 /lessons — قاعده‌هایی که تیم از بازخوردهای شما به خاطر سپرده است
 /lesson متن — یک قاعدهٔ همیشگی تازه برای نویسنده
 /cancel — انصراف از نوشتن توضیح اصلاح"""
@@ -346,6 +347,12 @@ class ControlService:
                            actor=actor)
         elif word == "/plans":
             self._say(chat, self.plans_text())
+        elif word == "/check":
+            if not hasattr(self.engine, "run_checks"):
+                self._say(chat, "بررسی سلامت فقط وقتی برنامه کامل روشن است در دسترس است.")
+            else:
+                self._say(chat, "🩺 در حال بررسی… (حدود یک دقیقه)")
+                self._say(chat, self.engine.run_checks(self.org_id))
         elif word == "/lessons":
             self.show_lessons(chat)
         elif word == "/lesson":

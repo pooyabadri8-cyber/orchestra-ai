@@ -19,6 +19,7 @@
     python -m orchestra.cli report [--days 7] [--end 2026-11-28]           the team's performance report
     python -m orchestra.cli leads [ID --stage contacted]                    financing leads (CRM)
     python -m orchestra.cli backup / restore [FOLDER]                       backups of the databases, images and settings
+    python -m orchestra.cli check                                           health check: what works, what to fix
 """
 from __future__ import annotations
 
@@ -83,23 +84,26 @@ def _runtime(cfg: Settings) -> Runtime:
         return [Route(provider, m) for m in dict.fromkeys(names)]
     routes = tier(cfg.llm_model)
     sessions = _sessions(cfg)
-    market = BourseTraderSource()
-    if cfg.bourse_trader_url:
-        market.url = cfg.bourse_trader_url
-    from .data.sources.tgju import TgjuSource
-    from .data.sources.tse_live import TseBourseSource, TseFarabourseSource, TseIndicesSource
-    fx = TgjuSource()
-    if cfg.tgju_url:
-        fx.url = cfg.tgju_url
     return Runtime(sessions=sessions, assets=AssetStore(cfg.asset_dir),
                    gateway=Gateway(sessions, {"writer": routes, "manager": tier(cfg.manager_model), "reviewer": tier(cfg.reviewer_model)},
                                    max_calls_per_run=cfg.llm_max_calls_per_run),
-                   fetcher=http_fetcher(), news_fetcher=_news_fetcher(cfg.foreign_proxy), sources={"bourse_trader": market, "tgju": fx,
-                                                    "tse_indices": TseIndicesSource(cfg.tse_cdn_base),
-                                                    "tse_farabourse": TseFarabourseSource(cfg.tse_cdn_base),
-                                                    "tse_bourse": TseBourseSource(cfg.tse_cdn_base)},
+                   fetcher=http_fetcher(), news_fetcher=_news_fetcher(cfg.foreign_proxy), sources=_data_sources(cfg),
                    brand_root=cfg.orgs_dir,
                    tse_old_base=cfg.tse_old_base, tse_cdn_base=cfg.tse_cdn_base)
+
+
+def _data_sources(cfg: Settings) -> dict:
+    """The market-data sources, with any address overrides from .env (independent of the model settings)."""
+    from .data.sources.tgju import TgjuSource
+    from .data.sources.tse_live import TseBourseSource, TseFarabourseSource, TseIndicesSource
+    market = BourseTraderSource()
+    if cfg.bourse_trader_url:
+        market.url = cfg.bourse_trader_url
+    fx = TgjuSource()
+    if cfg.tgju_url:
+        fx.url = cfg.tgju_url
+    return {"bourse_trader": market, "tgju": fx, "tse_indices": TseIndicesSource(cfg.tse_cdn_base),
+            "tse_farabourse": TseFarabourseSource(cfg.tse_cdn_base), "tse_bourse": TseBourseSource(cfg.tse_cdn_base)}
 
 
 def _news_fetcher(proxy: str = ""):
@@ -527,6 +531,11 @@ class DbosEngine:
             time.sleep(0.3)
         raise TimeoutError("the run did not finish after the decision")
 
+    def run_checks(self, org_id: str) -> str:
+        from .doctor import run_checks
+        return run_checks(self.cfg, org_id, sessions=self.rtm.sessions, rtm=self.rtm,
+                          destinations=_org_destinations(self.cfg, org_id))
+
     def publish_due(self) -> dict[int, str]:
         return asyncio.run(self.publisher.run_due())
 
@@ -795,6 +804,25 @@ def cmd_restore(cfg: Settings, a) -> None:
     print("فایل‌های قبلی با پسوند .before-restore-... در پوشهٔ data مانده‌اند.")
 
 
+def _org_destinations(cfg: Settings, org: str) -> list:
+    with _sessions(cfg)() as s:
+        return s.execute(select(Destination).where(Destination.org_id == org)).scalars().all()
+
+
+def cmd_check(cfg: Settings, a) -> None:
+    """The health check (check.bat): settings, model, bots, channels, sources, slides, backups."""
+    from .doctor import run_checks
+    print("در حال بررسی… (حدود یک دقیقه)", flush=True)
+    try:
+        rtm, error = _runtime(cfg), ""
+    except SystemExit as e:  # the model is not set up: everything else is still checked
+        from types import SimpleNamespace
+        rtm = SimpleNamespace(gateway=None, sources=_data_sources(cfg), fetcher=http_fetcher(),
+                              news_fetcher=_news_fetcher(cfg.foreign_proxy))
+        error = str(e)
+    print(run_checks(cfg, a.org, sessions=_sessions(cfg), rtm=rtm, runtime_error=error, destinations=_org_destinations(cfg, a.org)))
+
+
 def cmd_jobs(cfg: Settings, a) -> None:
     with _sessions(cfg)() as s:
         for j in s.execute(select(PublishJob).order_by(PublishJob.id.desc()).limit(30)).scalars():
@@ -829,12 +857,18 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("plan-approve"); p.add_argument("plan_id", type=int)
     p = sub.add_parser("plan-reject"); p.add_argument("plan_id", type=int)
     sub.add_parser("backup")
+    p = sub.add_parser("check"); p.add_argument("--org", default="pouyan")
     p = sub.add_parser("restore"); p.add_argument("folder", nargs="?"); p.add_argument("--yes", action="store_true")
     p = sub.add_parser("leads"); p.add_argument("--org", default="pouyan"); p.add_argument("lead_id", type=int, nargs="?")
     p.add_argument("--stage")
     p = sub.add_parser("report"); p.add_argument("--org", default="pouyan"); p.add_argument("--days", type=int, default=7)
     p.add_argument("--end")
     a = ap.parse_args(argv)
+    from .backup import sqlite_path
+    for url in (cfg.database_url, cfg.system_database_url):  # a fresh folder: the database's folder may not exist yet
+        path = sqlite_path(url)
+        if path is not None and path.parent != Path(""):
+            path.parent.mkdir(parents=True, exist_ok=True)
     if a.cmd not in ("init", "restore"):  # restore must not hold the database open (Windows cannot rename an open file)
         create_schema(make_engine(cfg.database_url))  # every command works on a fresh database (idempotent)
         _sync_destinations(cfg)  # edits to orgs/<org>/destinations.yaml take effect on the next command
@@ -867,6 +901,8 @@ def main(argv: list[str] | None = None) -> int:
         print("ثبت شد." if _publisher(cfg).confirm_sent(a.job_id, actor) else "این کار در وضعیت «نامعلوم» نیست.")
     elif a.cmd == "retry":
         print("دوباره در صف قرار گرفت." if _publisher(cfg).requeue(a.job_id, actor) else "این کار قابل ارسال دوباره نیست.")
+    elif a.cmd == "check":
+        cmd_check(cfg, a)
     elif a.cmd == "backup":
         cmd_backup(cfg, a)
     elif a.cmd == "restore":

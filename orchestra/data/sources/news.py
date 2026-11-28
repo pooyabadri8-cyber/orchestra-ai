@@ -102,7 +102,12 @@ def parse_feed(raw: bytes) -> list[NewsItem]:
 
 
 def parse_telegram(raw: bytes, min_chars: int = 40) -> list[NewsItem]:
-    soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "html.parser")
+    import warnings
+
+    from bs4 import XMLParsedAsHTMLWarning
+    with warnings.catch_warnings():  # a wrong answer (a feed, an error page) is reported below, not as a library warning
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "html.parser")
     posts = soup.select("div.tgme_widget_message[data-post]")
     if not posts and not soup.select_one(".tgme_channel_info, .tgme_page"):
         raise ParseError("صفحهٔ کانال تلگرام شکل همیشگی را ندارد (کانال خصوصی است یا نشانی اشتباه است)")
