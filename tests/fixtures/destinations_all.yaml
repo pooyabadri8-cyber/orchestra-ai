@@ -1,0 +1,20 @@
+# Channels ORCHESTRA may publish to for this organization. Tokens are NOT here: secret_env names the .env variable.
+# Start with private test channels only. The bot must be an admin of the channel with permission to post.
+destinations:
+  - id: tg_test
+    platform: telegram
+    chat_id: "-1004403985461"         # private test channel (numeric id)
+    secret_env: TELEGRAM_TEST_BOT_TOKEN
+  - id: tg_test_slides               # the same test channel also gets the slides as an album
+    platform: telegram
+    content: carousel
+    chat_id: "-1004403985461"
+    secret_env: TELEGRAM_TEST_BOT_TOKEN
+  - id: bale_test
+    platform: bale
+    chat_id: "@your_test_channel_bale"
+    secret_env: BALE_TEST_BOT_TOKEN
+  - id: ig_test
+    platform: instagram
+    chat_id: "17841400000000000"      # Instagram business account id (from Meta Business / Graph API Explorer)
+    secret_env: INSTAGRAM_TEST_TOKEN  # long-lived access token with instagram_content_publish permission

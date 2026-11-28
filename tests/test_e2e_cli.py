@@ -133,6 +133,8 @@ def project(tmp_path):
             continue
         (work / f).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / f, work / f)
+    # the tests' own channels (all four on), whatever the owner has switched on or off in the real file
+    shutil.copy2(Path(__file__).parent / "fixtures" / "destinations_all.yaml", work / "orgs" / "pouyan" / "destinations.yaml")
     # the copy never reaches the internet: its news sources (collected in the background by `serve`) point at the fake server
     (work / "orgs" / "pouyan" / "research.yaml").write_text(
         f"org_id: pouyan\nsources:\n  - {{id: fake, name: fake, type: rss, url: 'http://127.0.0.1:{port}/rss'}}\n", encoding="utf-8")
