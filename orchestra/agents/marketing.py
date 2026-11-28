@@ -262,7 +262,7 @@ def fixed_items(schedule: Iterable, start: date, days: int) -> list[Fixed]:
         d = start + timedelta(days=i)
         for e in schedule:
             if DAYS[d.weekday()] in e.days:
-                out.append(Fixed(d, f"{e.at[0]:02d}:{e.at[1]:02d}", e.request))
+                out.append(Fixed(d, f"{e.at[0]:02d}:{e.at[1]:02d}", getattr(e, "title", "") or e.request))
     return sorted(out, key=lambda f: (f.day, f.time))
 
 

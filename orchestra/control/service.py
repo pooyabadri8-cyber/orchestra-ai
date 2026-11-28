@@ -105,6 +105,7 @@ class ScheduleEntry:
     at: tuple[int, int]
     days: tuple[str, ...]
     request: str
+    title: str = ""  # a short name for the content calendar (e.g. «گزارش پایان بازار»); empty: the request
 
 
 def load_schedule(path: Path) -> list[ScheduleEntry]:
@@ -126,7 +127,8 @@ def load_schedule(path: Path) -> list[ScheduleEntry]:
         name = str(e.get("name") or "").strip()
         if not request or not re.fullmatch(r"[a-z0-9_]{1,40}", name):
             raise ValueError(f"{path}: مورد {i + 1}: name (حروف کوچک انگلیسی/عدد/_) و request لازم است")
-        out.append(ScheduleEntry(name, (int(m.group(1)), int(m.group(2))), days, request))
+        title = " ".join(str(e.get("title") or "").split())[:60]
+        out.append(ScheduleEntry(name, (int(m.group(1)), int(m.group(2))), days, request, title))
     if len({e.name for e in out}) != len(out):
         raise ValueError(f"{path}: نام‌های schedule باید یکتا باشند")
     return out

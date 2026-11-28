@@ -396,6 +396,8 @@ def test_schedule_file(tmp_path):
     assert load_schedule(f) == []
     f.write_text('schedule:\n  - {name: close, time: "12:45", days: [sat, Sun], request: "گزارش"}\n  - {name: off, time: "9:00", request: x, enabled: false}\n', encoding="utf-8")
     assert load_schedule(f) == [ScheduleEntry("close", (12, 45), ("sat", "sun"), "گزارش")]
+    f.write_text('schedule:\n  - {name: close, time: "12:45", request: "گزارش امروز را آماده کن", title: "گزارش پایان بازار"}\n', encoding="utf-8")
+    assert load_schedule(f)[0].title == "گزارش پایان بازار"
     for bad in ('- {name: a, time: "25:00", request: x}', '- {name: a, time: "12:00", days: [funday], request: x}',
                 '- {name: "بد", time: "12:00", request: x}', '- {name: a, time: "12:00"}',
                 '- {name: a, time: "12:00", request: x}\n  - {name: a, time: "13:00", request: y}'):

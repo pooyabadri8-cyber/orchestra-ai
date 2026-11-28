@@ -115,6 +115,8 @@ def test_items_become_preset_requests_at_their_time():
     assert "کارنامهٔ پویان کراد" in request_text(it, POLICY, KB)
     text = plan_text(plan, POLICY, KB, FIXED)
     assert "۱۸:۰۰ — اثبات و کارنامه: کارنامهٔ پویان کراد" in text and "(ثابت)" in text and "۱۲:۴۵" in text
+    titled = fixed_items([ScheduleEntry("market_close", (12, 45), ("sat",), "گزارش پایان بازار امروز را آماده کن", "گزارش پایان بازار")], SAT, 7)
+    assert "۱۲:۴۵ — گزارش پایان بازار (ثابت)" in plan_text(plan, POLICY, KB, titled)
 
 
 def test_approval_is_bound_to_the_hash_and_given_once(sessions):
