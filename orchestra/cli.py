@@ -56,13 +56,41 @@ def _sessions(cfg: Settings):
     return make_sessionmaker(make_engine(cfg.database_url))
 
 
+MODEL_WARNING: str = ""  # set by _runtime when .env held a model name that can never work; `serve` tells the owner
+
+
+def _repair_models(cfg: Settings) -> tuple[Settings, str]:
+    """Names that cannot be model names (a stray «صw») are left out. If none is left for the writer and the service is
+    Gemini, its default models are used, so the team keeps working; the owner is told to correct .env."""
+    from .llm import GEMINI_DEFAULT_MODELS, MODEL_NAME
+    bad: list[str] = []
+    fixed = {}
+    for field in ("llm_model", "llm_fallback_model", "manager_model", "reviewer_model"):
+        names = [n.strip() for n in getattr(cfg, field).split(",") if n.strip()]
+        good = [n for n in names if MODEL_NAME.fullmatch(n)]
+        bad += [n for n in names if not MODEL_NAME.fullmatch(n)]
+        if len(good) != len(names):
+            fixed[field] = ",".join(good)
+    if not bad:
+        return cfg, ""
+    if not fixed.get("llm_model", cfg.llm_model):
+        if "generativelanguage.googleapis.com" not in cfg.llm_base_url:
+            sys.exit(f"نام مدل «{'، '.join(bad)}» در .env درست نیست (فقط حروف انگلیسی، عدد و . - _ : /). "
+                     "ORCHESTRA_LLM_MODEL را در .env درست کنید.")
+        fixed["llm_model"] = GEMINI_DEFAULT_MODELS
+    warning = (f"⚠️ نام مدل «{'، '.join(bad)}» در فایل .env درست نیست و کنار گذاشته شد؛ فعلاً با "
+               f"{fixed.get('llm_model') or cfg.llm_model} کار می‌کنم. برای درست کردن: در .env خط ORCHESTRA_LLM_MODEL را "
+               f"{GEMINI_DEFAULT_MODELS} کنید (یا setup.bat و Enter).")
+    return cfg.model_copy(update=fixed), warning
+
+
 def _runtime(cfg: Settings) -> Runtime:
+    global MODEL_WARNING
     if not cfg.llm_api_key or not cfg.llm_model:
         sys.exit("ORCHESTRA_LLM_API_KEY و ORCHESTRA_LLM_MODEL را در فایل .env پر کنید.")
-    for name in ",".join([cfg.llm_model, cfg.llm_fallback_model, cfg.manager_model, cfg.reviewer_model]).split(","):
-        if name.strip() and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{1,80}", name.strip()):
-            sys.exit(f"نام مدل «{name.strip()}» در .env درست نیست (فقط حروف انگلیسی، عدد و . - _ : /). "
-                     "setup.bat را اجرا کنید و با Enter نام پیش‌فرض را بگذارید، یا ORCHESTRA_LLM_MODEL را در .env درست کنید.")
+    cfg, MODEL_WARNING = _repair_models(cfg)
+    if MODEL_WARNING:
+        print(MODEL_WARNING, file=sys.stderr, flush=True)
     from .llm import check_base_url
     try:
         if cfg.llm_provider == "anthropic":
@@ -618,6 +646,11 @@ def cmd_serve(cfg: Settings, a) -> None:
         svc.extra_ticks.append(NewsCollector(a.org, cfg.orgs_dir, rtm.sessions, rtm.assets, rtm.news_fetcher, utcnow).tick)
         print(f"خبرها هر {news_cfg.collect_every_minutes} دقیقه از {len([x for x in news_cfg.sources if x.enabled])} منبع جمع می‌شوند.", flush=True)
     print(f"ربات کنترل روشن است ({cfg.control_platform}). برای خاموش کردن، همین پنجره را ببندید.", flush=True)
+    if MODEL_WARNING and owners:
+        try:
+            svc._say(None, MODEL_WARNING)
+        except Exception:  # noqa: BLE001  the chat being unreachable now is reported by the loop
+            pass
     if not owners:
         print("هنوز هیچ شناسه‌ای مجاز نیست: به ربات یک پیام بدهید تا شناسه‌تان را بگوید، بعد آن را در ORCHESTRA_CONTROL_CHAT_IDS بنویسید.", flush=True)
     for e in schedule:

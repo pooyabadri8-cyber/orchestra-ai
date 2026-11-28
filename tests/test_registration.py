@@ -156,13 +156,28 @@ def test_an_existing_database_gets_the_new_destination_column(tmp_path):
     assert sqlite3.connect(path).execute("select content from destinations").fetchone() == ("post",)
 
 
-def test_a_malformed_model_name_is_explained_at_start(tmp_path, monkeypatch):
-    from orchestra.cli import _runtime
-    from orchestra.settings import Settings
-    cfg = Settings(llm_api_key="k", llm_model="صw", llm_provider="openai_compatible",
-                   llm_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                   database_url=f"sqlite:///{tmp_path / 'a.db'}")
+def test_a_malformed_model_name_is_repaired_with_a_warning_or_explained(tmp_path):
     import pytest
-    with pytest.raises(SystemExit) as e:
-        _runtime(cfg)
-    assert "صw" in str(e.value) and "setup.bat" in str(e.value)
+
+    import orchestra.cli as cli
+    from orchestra.llm import GEMINI_DEFAULT_MODELS
+    from orchestra.settings import Settings
+    gemini = Settings(llm_api_key="k", llm_model="صw", llm_provider="openai_compatible", reviewer_model="بد,gemini-x",
+                      llm_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                      database_url=f"sqlite:///{tmp_path / 'a.db'}")
+    rtm = cli._runtime(gemini)  # the team keeps working on Gemini's defaults
+    assert [r.model for r in rtm.gateway.tiers["writer"]] == GEMINI_DEFAULT_MODELS.split(",")
+    assert [r.model for r in rtm.gateway.tiers["reviewer"]][0] == "gemini-x"
+    assert "صw" in cli.MODEL_WARNING and "ORCHESTRA_LLM_MODEL" in cli.MODEL_WARNING
+    other = gemini.model_copy(update={"llm_base_url": "https://openrouter.ai/api/v1"})
+    with pytest.raises(SystemExit) as e:  # another service: no default to fall back on
+        cli._runtime(other)
+    assert "صw" in str(e.value)
+
+
+def test_model_errors_are_one_plain_sentence():
+    from orchestra.llm import http_error
+    raw = '[{"error": {"code": 400, "message": "* GenerateContentRequest.model: unexpected model name format\\n", "status": "INVALID_ARGUMENT"}}]'
+    text = http_error(400, raw, "صw")
+    assert text.startswith("سرویس مدل، نام مدل «صw» را نمی‌شناسد") and "{" not in text and "INVALID_ARGUMENT" not in text
+    assert "کلید مدل پذیرفته نشد" in http_error(401, "{}", "m") and "سهمیه" in http_error(429, "", "m")

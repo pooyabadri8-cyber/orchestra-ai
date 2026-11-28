@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -23,6 +24,37 @@ from .db import LLMCall
 CONNECT_TIMEOUT = 15.0
 UNREACHABLE_HINT = "به سرویس مدل وصل نشد؛ اگر آن سرویس از ایران بسته است، VPN را روشن کنید"
 BAD_URL_MESSAGE = "آدرس سرویس مدل («{url}») درست نیست؛ باید با https:// شروع شود (ORCHESTRA_LLM_BASE_URL در .env)"
+
+
+GEMINI_DEFAULT_MODELS = "gemini-3.6-flash,gemini-3.5-flash-lite"  # what setup offers for Gemini
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{1,80}")
+
+
+def http_error(status: int, text: str, model: str) -> str:
+    """One plain sentence (Persian) for a model service's error answer, with what to do; the service's own short
+    message is kept at the end for whoever needs it. Never the raw JSON."""
+    import json
+    detail = ""
+    try:
+        body = json.loads(text)
+        body = body[0] if isinstance(body, list) and body else body
+        err = body.get("error") if isinstance(body, dict) else None
+        detail = str((err.get("message") if isinstance(err, dict) else err) or "").strip()
+    except (ValueError, AttributeError, TypeError):
+        detail = " ".join((text or "").split())
+    detail = detail.replace("\\n", " ").split("\n")[0][:160]
+    low = detail.lower()
+    if status == 400 and "model" in low or status == 404:
+        why = f"سرویس مدل، نام مدل «{model}» را نمی‌شناسد؛ ORCHESTRA_LLM_MODEL را در .env درست کنید (مثلاً {GEMINI_DEFAULT_MODELS})."
+    elif status in (401, 403):
+        why = "کلید مدل پذیرفته نشد؛ ORCHESTRA_LLM_API_KEY را در .env بررسی کنید (یا setup.bat)."
+    elif status == 429:
+        why = "سهمیهٔ سرویس مدل فعلاً تمام شده یا درخواست‌ها زیاد بوده؛ کمی بعد دوباره امتحان می‌شود."
+    elif status >= 500:
+        why = "سرویس مدل فعلاً جواب درست نمی‌دهد (مشکل از سمت سرویس است)؛ کمی بعد دوباره امتحان کنید."
+    else:
+        why = "سرویس مدل درخواست را نپذیرفت."
+    return f"{why} (HTTP {status}{': ' + detail if detail else ''})"
 
 
 def check_base_url(url: str) -> None:
@@ -77,7 +109,7 @@ class AnthropicProvider:
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:
-            raise LLMError(f"HTTP {r.status_code}: {r.text[:200]}", retryable=r.status_code in (408, 429, 500, 502, 503, 504, 529))
+            raise LLMError(http_error(r.status_code, r.text[:2000], model), retryable=r.status_code in (408, 429, 500, 502, 503, 504, 529))
         data = r.json()
         text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
         usage = data.get("usage", {})
@@ -108,7 +140,7 @@ class OpenAICompatibleProvider:
             except httpx.HTTPError as e:
                 raise LLMError(f"network: {type(e).__name__}") from e
         if r.status_code != 200:
-            raise LLMError(f"HTTP {r.status_code}: {r.text[:200]}", retryable=r.status_code in (408, 429, 500, 502, 503, 504))
+            raise LLMError(http_error(r.status_code, r.text[:2000], model), retryable=r.status_code in (408, 429, 500, 502, 503, 504))
         data = r.json()
         try:
             choice = data["choices"][0]
