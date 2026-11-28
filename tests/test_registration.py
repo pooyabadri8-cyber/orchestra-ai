@@ -154,3 +154,15 @@ def test_an_existing_database_gets_the_new_destination_column(tmp_path):
     create_schema(make_engine(f"sqlite:///{path}"))
     create_schema(make_engine(f"sqlite:///{path}"))  # twice: nothing to add the second time
     assert sqlite3.connect(path).execute("select content from destinations").fetchone() == ("post",)
+
+
+def test_a_malformed_model_name_is_explained_at_start(tmp_path, monkeypatch):
+    from orchestra.cli import _runtime
+    from orchestra.settings import Settings
+    cfg = Settings(llm_api_key="k", llm_model="صw", llm_provider="openai_compatible",
+                   llm_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                   database_url=f"sqlite:///{tmp_path / 'a.db'}")
+    import pytest
+    with pytest.raises(SystemExit) as e:
+        _runtime(cfg)
+    assert "صw" in str(e.value) and "setup.bat" in str(e.value)

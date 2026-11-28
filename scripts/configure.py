@@ -96,6 +96,32 @@ def check_model_key(key: str, base: str, http: httpx.Client) -> str | None:
     return None
 
 
+_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{1,80}$")
+
+
+def model_ids(key: str, base: str, http: httpx.Client) -> set[str]:
+    """The models the service offers for this key (empty when it cannot be listed: then names are not checked)."""
+    try:
+        r = http.get(base.rstrip("/") + "/models", headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        data = r.json().get("data") or [] if r.status_code == 200 else []
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return set()
+    return {str(m.get("id", "")).removeprefix("models/") for m in data if isinstance(m, dict) and m.get("id")}
+
+
+def bad_models(text: str, known: set[str]) -> str | None:
+    """Why this comma-separated list is not model names (None: it is). A stray key («صw») must never be saved."""
+    names = [n.strip() for n in (text or "").split(",") if n.strip()]
+    if not names:
+        return "نام مدل خالی است."
+    for n in names:
+        if not _MODEL.match(n):
+            return f"«{n}» نام مدل نیست؛ فقط حروف انگلیسی، عدد و . - _ : / (صفحه‌کلید روی انگلیسی باشد)."
+        if known and n.removeprefix("models/") not in known:
+            return f"مدل «{n}» در فهرست سرویس نیست."
+    return None
+
+
 class Bot:
     def __init__(self, token: str, base: str, http: httpx.Client):
         self.url = f"{base}{token}/"
@@ -179,8 +205,21 @@ def configure(io: Io, http: httpx.Client, *, telegram_base: str = "https://api.t
         if io.ask("دوباره امتحان کنم؟ (Enter = بله، n = بعداً): ").strip().lower() == "n":
             new["ORCHESTRA_LLM_API_KEY"] = key
             break
-    models = io.ask(f"نام مدل‌ها با کاما [Enter = {env.get('ORCHESTRA_LLM_MODEL') or DEFAULT_MODELS}]: ").strip()
-    new["ORCHESTRA_LLM_MODEL"] = models or env.get("ORCHESTRA_LLM_MODEL") or DEFAULT_MODELS
+    known = model_ids(new.get("ORCHESTRA_LLM_API_KEY") or key, base, http)
+    saved = env.get("ORCHESTRA_LLM_MODEL", "")
+    default = saved if saved and bad_models(saved, known) is None else DEFAULT_MODELS  # a broken saved value is not offered
+    if saved and default != saved:
+        io.say(f"⚠️ نام مدلی که قبلاً ذخیره شده بود («{saved}») درست نیست؛ با Enter مقدار پیش‌فرض گذاشته می‌شود.")
+    while True:
+        models = io.ask(f"نام مدل‌ها با کاما [Enter = {default}]: ").strip() or default
+        why = bad_models(models, known)
+        if why is None:
+            new["ORCHESTRA_LLM_MODEL"] = models
+            break
+        io.say(f"❌ {why}")
+        if known:
+            flash = sorted(m for m in known if "flash" in m)[-6:] or sorted(known)[:6]
+            io.say("چند مدل موجود: " + "، ".join(flash))
 
     # 2. the Telegram bot and the test channel
     token = None

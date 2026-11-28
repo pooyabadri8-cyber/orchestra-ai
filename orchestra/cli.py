@@ -59,6 +59,10 @@ def _sessions(cfg: Settings):
 def _runtime(cfg: Settings) -> Runtime:
     if not cfg.llm_api_key or not cfg.llm_model:
         sys.exit("ORCHESTRA_LLM_API_KEY و ORCHESTRA_LLM_MODEL را در فایل .env پر کنید.")
+    for name in ",".join([cfg.llm_model, cfg.llm_fallback_model, cfg.manager_model, cfg.reviewer_model]).split(","):
+        if name.strip() and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{1,80}", name.strip()):
+            sys.exit(f"نام مدل «{name.strip()}» در .env درست نیست (فقط حروف انگلیسی، عدد و . - _ : /). "
+                     "setup.bat را اجرا کنید و با Enter نام پیش‌فرض را بگذارید، یا ORCHESTRA_LLM_MODEL را در .env درست کنید.")
     from .llm import check_base_url
     try:
         if cfg.llm_provider == "anthropic":

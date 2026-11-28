@@ -36,12 +36,13 @@ class World:
 
     def __init__(self, good_key="GOOD", token="123:TOK"):
         self.good_key, self.token = good_key, token
+        self.models: list[str] = []  # what /models lists (empty: names cannot be checked against it)
         self.updates, self.pending, self.calls = [], [], []
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         if req.url.path.endswith("/models"):
             ok = req.headers.get("authorization") == f"Bearer {self.good_key}"
-            return httpx.Response(200 if ok else 401, json={"data": []})
+            return httpx.Response(200 if ok else 401, json={"data": [{"id": m} for m in self.models]})
         token, method = req.url.path.split("/bot", 1)[1].split("/", 1)
         if token != self.token:
             return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
@@ -137,3 +138,28 @@ def test_env_written_by_configure_is_read_by_the_app(tmp_path, monkeypatch):
     from orchestra.settings import load_settings
     cfg = load_settings()
     assert cfg.llm_api_key == "k" and cfg.llm_model == "a,b" and cfg.database_url == "sqlite:///data/app.db"
+
+
+def test_a_stray_key_is_never_saved_as_the_model(tmp_path):
+    env, dest = files(tmp_path)
+    io = run(World(), ["GOOD", "صw", "", ""], env, dest)  # Persian keyboard by mistake, then Enter
+    assert configure.read_env(env)["ORCHESTRA_LLM_MODEL"] == configure.DEFAULT_MODELS
+    assert any("نام مدل نیست" in t for t in io.out)
+
+
+def test_a_broken_saved_model_is_not_offered_again(tmp_path):
+    env, dest = files(tmp_path)
+    env.write_text("ORCHESTRA_LLM_API_KEY=GOOD\nORCHESTRA_LLM_MODEL=صw\n", encoding="utf-8")
+    io = run(World(), ["", "", ""], env, dest)  # Enter everywhere
+    assert configure.read_env(env)["ORCHESTRA_LLM_MODEL"] == configure.DEFAULT_MODELS
+    assert any("درست نیست" in t for t in io.out) and not any("Enter = صw" in t for t in io.out)
+
+
+def test_a_model_the_service_does_not_offer_is_refused(tmp_path):
+    env, dest = files(tmp_path)
+    w = World()
+    w.models = ["models/gemini-3.6-flash", "models/gemini-3.5-flash-lite", "models/text-embedding-004"]
+    io = run(w, ["GOOD", "gemini-9-ultra", "", ""], env, dest)
+    assert configure.read_env(env)["ORCHESTRA_LLM_MODEL"] == configure.DEFAULT_MODELS
+    shown = "\n".join(io.out)
+    assert "در فهرست سرویس نیست" in shown and "gemini-3.6-flash" in shown
