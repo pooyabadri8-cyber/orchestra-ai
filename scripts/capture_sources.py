@@ -66,6 +66,8 @@ def news_targets() -> list[tuple[str, str, str, bool]]:
         for src in (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get("sources") or []:
             url = src.get("url") or f"https://t.me/s/{str(src.get('channel', '')).lstrip('@')}"
             out.append((f"news_{src['id']}", url, f"research source ({f.parent.name})", bool(src.get("foreign"))))
+    # a public channel's page, where the audience figures (view counts) are read
+    out.append(("audience_pouyan_channel", "https://t.me/s/pouyanbrokerage", "public channel page (view counts)", True))
     return out
 
 HEADERS = {

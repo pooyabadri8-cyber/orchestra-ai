@@ -25,7 +25,7 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 MAX_DAYS = 90
 
 ORIGIN_FA = {"update": "درخواست شما", "schedule": "زمان‌بندی روزانه", "plan": "برنامهٔ محتوا", "cli": "خط فرمان"}
-TEMPLATE_FA = {"market_report": "گزارش بازار", "topic_post": "پست موضوعی", "stock_report": "گزارش نماد",
+TEMPLATE_FA = {"market_report": "گزارش بازار", "topic_post": "پست موضوعی", "news_digest": "خلاصهٔ خبر", "stock_report": "گزارش نماد",
                "market_close_v1": "گزارش پایان بازار (ساده)", "request": "بدون برنامه"}
 RULE_FA = {
     "V-UNBOUND": "عدد بی‌منبع در متن", "V-BINDING": "ارجاع نادرست به داده", "R-SHAPE": "ساختار ناقص", "R-LENGTH": "متن بلند",
@@ -114,6 +114,7 @@ class Report:
     median_first_contact_minutes: float | None = None
     leads_overdue: list[int] = field(default_factory=list)  # waiting for a first contact longer than follow_up_hours, now
     stage_names: dict[str, str] = field(default_factory=dict)
+    audience: object = None  # agents.audience.Audience
 
 
 def _minutes(a: datetime, b: datetime) -> float:
@@ -210,6 +211,8 @@ def build_report(session: Session, org_id: str, *, end_day: date, days: int, now
         except PlanError:
             pass  # ids are shown instead
     _crm_stats(session, rep, org_id, lo, hi, now, root)
+    from .audience import audience
+    rep.audience = audience(session, org_id, lo, hi)
     control = session.get(OrgControl, org_id)
     rep.paused = bool(control and control.paused)
     return rep
@@ -365,6 +368,20 @@ def report_text(rep: Report) -> str:
             lines.append("• " + "، ".join(f"{JOB_FA.get(s, s)}: {_n(n)}" for s, n in problems.items()))
     else:
         lines.append("• در این دوره چیزی برای ارسال در صف قرار نگرفت.")
+
+    a = rep.audience
+    if a is not None and a.public:
+        lines += ["", "👁 مخاطب (کانال‌های عمومی)"]
+        if a.posts:
+            lines.append(f"• {_n(a.posts)} پست، مجموع {_n(a.total)} بازدید؛ میانگین هر پست {_n(a.total // a.posts)}")
+            lines.append("• میانگین بازدید هر نوع: " + "، ".join(f"{TEMPLATE_FA.get(k, k)} {_n(a.average(v))}"
+                                                            for k, v in sorted(a.by_kind.items(), key=lambda x: -a.average(x[1]))))
+            if a.by_topic:
+                lines.append("• پست‌های تقویم: " + "، ".join(f"{k} {_n(a.average(v))}"
+                                                        for k, v in sorted(a.by_topic.items(), key=lambda x: -a.average(x[1]))[:5]))
+            lines += [f"   – «{h}»: {_n(n)} بازدید" for n, h in a.top]
+        else:
+            lines.append("• هنوز بازدیدی خوانده نشده است (ربات کنترل باید روشن باشد؛ هر ۶ ساعت خوانده می‌شود).")
 
     p = rep.plans
     if p.planned:

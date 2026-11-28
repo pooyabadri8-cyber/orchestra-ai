@@ -66,6 +66,8 @@ class Destination(Base):
     # what this channel receives: "post" (the written post) or "carousel" (the slides as an album with the short
     # caption). Telegram and Bale can take either; one channel can be listed twice to get both.
     content: Mapped[str] = mapped_column(String(16), default="post", server_default="post")
+    # a public Telegram channel's username: its view counts are read from t.me/s/<username> (audience figures)
+    public_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -361,6 +363,16 @@ class IntakeChat(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class PostView(Base):
+    """How many people saw a published message, as the channel's public page showed it at `fetched_at`."""
+
+    __tablename__ = "post_views"
+    job_id: Mapped[int] = mapped_column(ForeignKey("publish_jobs.id"), primary_key=True)
+    message_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    views: Mapped[int] = mapped_column(Integer)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class Lesson(Base):
     """A standing instruction the owner chose to keep, in their own words (team memory). offered -> active |
     dismissed; active -> retired. Only active lessons reach the writer, the editor or the planner."""
@@ -401,7 +413,8 @@ def create_schema(engine: Engine) -> None:
 
 
 # Columns added after a database may already exist. create_all() makes new tables only, so these are added here.
-_ADDED_COLUMNS = (("destinations", "content", "VARCHAR(16) NOT NULL DEFAULT 'post'"),)
+_ADDED_COLUMNS = (("destinations", "content", "VARCHAR(16) NOT NULL DEFAULT 'post'"),
+                  ("destinations", "public_username", "VARCHAR(64)"))
 
 
 def _add_missing_columns(engine: Engine) -> None:

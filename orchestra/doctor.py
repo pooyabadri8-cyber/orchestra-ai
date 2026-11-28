@@ -41,6 +41,7 @@ class Doctor:
         from .db import utcnow
         self.now = now or utcnow()
         self.out: list[Check] = []
+        self.public_pages: list[tuple[str, str]] = []  # (destination, public username): audience figures are read there
 
     def add(self, area: str, name: str, status: str, detail: str = "", fix: str = "") -> None:
         self.out.append(Check(area, name, status, detail, fix))
@@ -52,6 +53,7 @@ class Doctor:
         self.channels()
         await self.sources()
         await self.news()
+        await self.audience()
         await self.slides()
         self.backup()
         return self.out
@@ -154,6 +156,8 @@ class Doctor:
             if d.platform == "instagram":
                 self.instagram(d, token, name)
                 continue
+            if getattr(d, "public_username", None):
+                self.public_pages.append((name, d.public_username))
             try:
                 api, me = self._me(d.platform, token)
                 chat = api.call("getChat", {"chat_id": d.chat_id})
@@ -231,6 +235,21 @@ class Doctor:
                 fix = ("منبع خارجی است: VPN را روشن کنید؛ اگر روشن است، capture_sources.bat خط ORCHESTRA_FOREIGN_PROXY را پیدا می‌کند."
                        if src.foreign else "نشانی فید را بررسی کنید، یا در research.yaml این منبع را enabled: false کنید.")
                 self.add("منبع‌های خبری", src.name, FAIL if not src.foreign else WARN, str(e)[:150], fix)
+
+    async def audience(self) -> None:
+        """A public channel's page, where its posts' view counts are read."""
+        if self.rtm is None or not self.public_pages:
+            return
+        from .agents.audience import page_url, parse_views
+        fetch = self.rtm.news_fetcher or (lambda url, foreign: self.rtm.fetcher(url))
+        for name, username in self.public_pages:
+            try:
+                views = parse_views(await fetch(page_url(username), True))
+                self.add("مخاطب", f"صفحهٔ عمومی {username}", OK if views else WARN, f"بازدید {len(views)} پست خوانده شد",
+                         "" if views else "کانال عمومی است؟ نام کاربری را در destinations.yaml بررسی کنید.")
+            except Exception as e:  # noqa: BLE001
+                self.add("مخاطب", f"صفحهٔ عمومی {username}", WARN, str(e)[:150],
+                         "صفحهٔ کانال از مسیر VPN خوانده می‌شود؛ VPN یا ORCHESTRA_FOREIGN_PROXY را بررسی کنید.")
 
     async def slides(self) -> None:
         try:

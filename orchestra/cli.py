@@ -212,9 +212,12 @@ def _load_destinations(cfg: Settings, org: str, session) -> int:
         content = d.get("content", "post")
         if content not in ("post", "carousel") or (content == "carousel" and d["platform"] not in ("telegram", "bale")):
             raise KeyError(f"{d['id']}: content باید post باشد، یا carousel برای telegram/bale")
-        session.merge(Destination(id=d["id"], org_id=org, platform=d["platform"], chat_id=str(d["chat_id"]),
+        chat = str(d["chat_id"])
+        public = d.get("public_username") or (chat[1:] if d["platform"] == "telegram" and chat.startswith("@") else None)
+        session.merge(Destination(id=d["id"], org_id=org, platform=d["platform"], chat_id=chat,
                                   secret_env=d["secret_env"], enabled=d.get("enabled", True),
-                                  content="carousel" if d["platform"] == "instagram" else content))
+                                  content="carousel" if d["platform"] == "instagram" else content,
+                                  public_username=str(public).lstrip("@") if public else None))
     return len(data.get("destinations", []))
 
 
@@ -642,6 +645,8 @@ def cmd_serve(cfg: Settings, a) -> None:
         news_cfg = load_research(a.org, cfg.orgs_dir)
     except ResearchError as e:
         sys.exit(f"منبع‌های خبری (research.yaml) خراب است: {e}")
+    from .agents.audience import AudienceCollector
+    svc.extra_ticks.append(AudienceCollector(rtm.sessions, rtm.news_fetcher, utcnow).tick)
     if news_cfg is not None:
         svc.extra_ticks.append(NewsCollector(a.org, cfg.orgs_dir, rtm.sessions, rtm.assets, rtm.news_fetcher, utcnow).tick)
         print(f"خبرها هر {news_cfg.collect_every_minutes} دقیقه از {len([x for x in news_cfg.sources if x.enabled])} منبع جمع می‌شوند.", flush=True)
