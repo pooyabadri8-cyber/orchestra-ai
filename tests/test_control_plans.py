@@ -91,6 +91,7 @@ def test_approved_plan_items_start_before_their_time_once(sessions, assets):
     with sessions() as s:
         assert [r.origin for r in s.query(ControlRequest) if r.origin.startswith("plan:")] == ["plan:1:2"]
     assert "▶️ شروع شده" in svc.plans_text()
+    assert "اثبات و کارنامه: کارنامهٔ پویان کراد" in svc.plans_text() and "proof/" not in svc.plans_text()
 
 
 def test_an_item_whose_time_passed_long_ago_is_not_started(sessions, assets):

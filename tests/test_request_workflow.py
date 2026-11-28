@@ -532,3 +532,23 @@ def test_a_stale_market_page_is_left_out_and_the_owner_is_told(engine):
         run = s.get(Run, rid)
         notes = [f["message"] for f in run.findings or [] if f["rule_id"] == "DATA-MARKET"]
     assert any("bourse-trader" in n for n in notes), (status, run.detail)
+
+
+def test_a_telegram_album_without_instagram_still_gets_its_slides(engine):
+    """The owner's setup: Instagram off, the Telegram test channel takes the post and also the slides as an album.
+    The plan (made for Telegram only) has no design step, yet the album needs slides: they are made."""
+    rtm, prov, _ = runtime(engine, [TOPIC_DRAFT, CLEAN, CLEAN])
+    with rtm.sessions.begin() as s:
+        s.merge(Destination(id="tg_slides", org_id="pouyan", platform="telegram", chat_id="@t", secret_env="X", content="carousel"))
+    tg_only = [["tg_test", "telegram", "post"], ["tg_slides", "telegram", "carousel"]]
+    rid = wf.run_id_for("pouyan", "album", date(2026, 11, 11))
+    with SetWorkflowID(rid):
+        DBOS.start_workflow(wf.handle_request, "pouyan", "album", DAY, tg_only,
+                            preset={"template": "topic_post", "params": {"topic": "crowd_track_record"}})
+    status = wait_for_status(rtm.sessions, rid, {"awaiting_approval", "failed", "blocked"}, timeout=90)
+    with rtm.sessions() as s:
+        run = s.get(Run, rid)
+        assert status == "awaiting_approval", run.detail
+        content = json.loads(s.get(PackageRow, run.package_id).content_json)
+    steps = {d["destination_id"]: d["delivery_plan"][0] for d in content["destinations"]}
+    assert steps["tg_test"]["mode"] == "text" and steps["tg_slides"]["mode"] == "album" and len(steps["tg_slides"]["asset_ids"]) >= 2

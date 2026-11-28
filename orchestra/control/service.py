@@ -59,6 +59,8 @@ FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "012345678
 SCHEDULE_WINDOW = timedelta(hours=4)
 PLAN_LATE = mk.PLAN_LATE
 
+NEWS_REQUEST = "خلاصهٔ مهم‌ترین خبرهای موثر بر بازار را برای همهٔ کانال‌ها آماده کن"
+
 HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 
 • هر درخواستی را ساده بنویسید، مثل:
@@ -75,6 +77,7 @@ HELP = """سلام! من ربات کنترل تیم محتوا هستم.
 /retry شماره — دوباره بفرست
 /plan — برنامهٔ محتوای هفتهٔ بعد (/plan فردا: از فردا)
 /plans — برنامهٔ تأییدشده و پست‌های پیش رو
+/news — خلاصهٔ خبرهای موثر بر بازار، همین حالا
 /report — گزارش عملکرد هفت روز گذشته (/report امروز، /report 30)
 /leads — سرنخ‌های باز تامین مالی
 /lead شماره — جزئیات و سابقهٔ یک سرنخ
@@ -349,6 +352,8 @@ class ControlService:
                            actor=actor)
         elif word == "/plans":
             self._say(chat, self.plans_text())
+        elif word == "/news":
+            self.start_request(NEWS_REQUEST, chat, origin, new=True)
         elif word == "/check":
             if not hasattr(self.engine, "run_checks"):
                 self._say(chat, "بررسی سلامت فقط وقتی برنامه کامل روشن است در دسترس است.")
@@ -778,6 +783,10 @@ class ControlService:
                                                           ContentPlanRow.status.in_(("approved", "proposed")))
                              .order_by(ContentPlanRow.id)).scalars().all()
             started = {r.origin for r in s.execute(select(ControlRequest).where(ControlRequest.origin.like("plan:%"))).scalars()}
+        try:
+            policy, kb, _, _ = self._context()
+        except Exception:  # noqa: BLE001  the names are a nicety: ids are shown instead
+            policy, kb = None, None
         lines = []
         for row in rows:
             plan = mk.load_plan(row)
@@ -788,7 +797,8 @@ class ControlService:
             for n, it in enumerate(plan.items, 1):
                 at = mk.publish_at(it)
                 mark = "▶️ شروع شده" if f"plan:{row.id}:{n}" in started else ("⏭ گذشت" if at + PLAN_LATE <= now else "⏳")
-                lines.append(f"  {mark} {mk.long_date(it.day)} {it.time.translate(mk.FA)} — {it.pillar}/{it.topic}")
+                what = mk.preset_for(it, policy, kb)["summary_fa"] if policy and policy.pillar(it.pillar) else f"{it.pillar}/{it.topic}"
+                lines.append(f"  {mark} {mk.long_date(it.day)} {it.time.translate(mk.FA)} — {what}")
         return "\n".join(lines) or "برنامهٔ فعالی نیست. /plan را بزنید."
 
     # ------------------------------------------------------------------ performance report (reporting agent)

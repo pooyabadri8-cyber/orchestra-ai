@@ -567,7 +567,9 @@ async def _produce(org_id: str, run_id: str, plan: ExecutionPlan, report: dict, 
 
     assets: list[dict] = []
     chart_points: list[str] = []
-    if plan.has("design"):
+    # slides for Instagram, or for a Telegram/Bale channel that takes them as an album (then "instagram" is in
+    # `platforms` although the plan, made for the owner's channels, may have no design step)
+    if plan.has("design") or "instagram" in platforms:
         designed = await s_design(org_id, run_id, verified)
         if "error" in designed:
             return {"status": "blocked", "findings": findings, "detail": {"error": f"design: {designed['error']}"},

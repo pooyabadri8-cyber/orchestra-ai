@@ -212,6 +212,14 @@ def test_a_run_the_engine_gave_up_on_is_reported_not_awaited_forever(bot, sessio
         assert s.get(Run, "pouyan:req:1").status == "failed"
 
 
+def test_news_shortcut(bot):
+    from orchestra.control.service import NEWS_REQUEST
+    svc, api, engine = bot
+    api.say("/news")
+    svc.tick()
+    assert engine.started == [(NEWS_REQUEST, True)] and "دریافت شد" in api.texts()[-1]
+
+
 def test_unknown_command(bot):
     svc, api, engine = bot
     api.say("/whatever")
